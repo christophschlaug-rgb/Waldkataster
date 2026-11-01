@@ -1,0 +1,39 @@
+name: waldkataster_app
+description: "Waldkataster: Flurkarte, Luftbild und GPS-Position fuer den Wald (Rheinland-Pfalz)."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+
+  # Karte (WMS-Dienste des Landesamts fuer Vermessung RLP)
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+
+  # GPS-Position
+  geolocator: ^12.0.0
+
+  # Kompass (Magnetfeld- und Beschleunigungssensor)
+  sensors_plus: ^6.1.0
+
+  # Netzwerk, Dienstbeschreibungen (XML), Zwischenspeicher
+  http: ^1.2.1
+  xml: ^6.5.0
+  crypto: ^3.0.3
+  path_provider: ^2.1.3
+
+  # Einstellungen (keine Zugangsdaten)
+  shared_preferences: ^2.2.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
