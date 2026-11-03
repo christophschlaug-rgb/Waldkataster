@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -11,11 +12,27 @@ import 'package:latlong2/latlong.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../app_config.dart';
+import '../models/marked_point.dart';
+import '../services/db_service.dart';
+import '../services/grenzpunkt_service.dart';
 import '../services/heading_tracker.dart';
 import '../services/settings_store.dart';
 import '../services/tile_cache.dart';
 import '../services/wms_service.dart';
+import '../widgets/map_widgets.dart';
 import 'diagnostics_screen.dart';
+import 'point_sheet.dart';
+import 'points_screen.dart';
+
+/// Grenzpunkte werden erst ab dieser Zoomstufe geladen und angezeigt.
+const double kPointsMinZoom = 16;
+
+class _Sample {
+  final double lat;
+  final double lon;
+  final double acc;
+  const _Sample(this.lat, this.lon, this.acc);
+}
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -30,6 +47,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   final MapController _map = MapController();
   final HeadingTracker _heading = HeadingTracker();
+  final Distance _distance = const Distance();
+  final ValueNotifier<double> _zoom = ValueNotifier<double>(9);
 
   MapSettings _settings = MapSettings();
   Map<String, WmsService> _services = {};
@@ -38,6 +57,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   bool _loading = true;
   String? _fatal;
+  String? _dbError;
 
   Position? _pos;
   StreamSubscription<Position>? _posSub;
@@ -49,6 +69,25 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   final Map<String, int> _tileErrors = {};
   String? _lastTileError;
+
+  // Punkte
+  Map<String, MarkedPoint> _saved = {};
+  List<CadastralPoint> _cad = [];
+  LatLngBounds? _loadedBounds;
+  Timer? _loadTimer;
+  bool _loadingPoints = false;
+  String? _pointsMessage;
+  String? _pointsDiag;
+
+  // Ziel und Messung
+  String? _targetId;
+  String _targetName = '';
+  LatLng? _targetPos;
+  int? _lastBand;
+  bool _measuring = false;
+  DateTime? _measureEnd;
+  Timer? _measureTimer;
+  final List<_Sample> _samples = [];
 
   @override
   void initState() {
@@ -62,8 +101,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _posSub?.cancel();
+    _loadTimer?.cancel();
+    _measureTimer?.cancel();
     _heading.heading.removeListener(_onHeading);
     _heading.dispose();
+    _zoom.dispose();
     _client?.close();
     super.dispose();
   }
@@ -94,6 +136,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       if (!await tileDir.exists()) await tileDir.create(recursive: true);
       unawaited(cleanTileCache(tileDir));
 
+      Map<String, MarkedPoint> saved = {};
+      String? dbError;
+      try {
+        final list = await DbService.instance.all();
+        saved = {for (final p in list) p.id: p};
+      } catch (e) {
+        dbError = e.toString();
+      }
+
       final client = TileCachingClient(http.Client(), tileDir);
       final services = await _loadServices();
       if (!mounted) {
@@ -102,6 +153,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       }
       setState(() {
         _settings = settings;
+        _saved = saved;
+        _dbError = dbError;
         _client = client;
         _provider = NetworkTileProvider(httpClient: client);
         _services = services;
@@ -177,6 +230,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _pos = p;
       _locationMessage = null;
     });
+
+    if (_measuring && p.accuracy <= 40) {
+      _samples.add(_Sample(p.latitude, p.longitude, p.accuracy));
+    }
+    _updateHaptics(p);
+
     if (!_mapReady) return;
     final ll = LatLng(p.latitude, p.longitude);
     if (!_firstFixDone) {
@@ -186,6 +245,27 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     } else if (_follow) {
       _map.move(ll, _map.camera.zoom);
     }
+  }
+
+  /// Kurze Vibration, wenn man dem Ziel naeher kommt (10 m, 5 m, 2 m).
+  void _updateHaptics(Position p) {
+    final target = _targetPos;
+    if (target == null) return;
+    final d = _distance.as(
+      LengthUnit.Meter,
+      LatLng(p.latitude, p.longitude),
+      target,
+    );
+    final band = d > 10 ? 3 : (d > 5 ? 2 : (d > 2 ? 1 : 0));
+    final last = _lastBand;
+    if (last != null && band != last) {
+      if (band < last) {
+        HapticFeedback.heavyImpact();
+      } else {
+        HapticFeedback.lightImpact();
+      }
+    }
+    _lastBand = band;
   }
 
   void _onHeading() {
@@ -208,6 +288,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       final h = _heading.heading.value;
       if (h != null) _map.rotate(-h);
     }
+    _zoom.value = _map.camera.zoom;
+    _scheduleLoadPoints(_map.camera);
+  }
+
+  void _onCameraChanged(MapCamera camera, bool hasGesture) {
+    _zoom.value = camera.zoom;
+    if (hasGesture && _follow) setState(() => _follow = false);
+    _scheduleLoadPoints(camera);
   }
 
   Future<void> _applyKeepAwake() async {
@@ -215,6 +303,394 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       await _screenChannel
           .invokeMethod<void>('keepOn', {'on': _settings.keepAwake});
     } catch (_) {}
+  }
+
+  // ------------------------------------------------------ Grenzpunkte
+
+  void _scheduleLoadPoints(MapCamera camera) {
+    _loadTimer?.cancel();
+    if (!_settings.pointsOn) return;
+    _loadTimer = Timer(
+      const Duration(milliseconds: 700),
+      () => _loadPoints(camera),
+    );
+  }
+
+  Future<void> _loadPoints(MapCamera camera) async {
+    if (!mounted || !_settings.pointsOn) return;
+
+    if (camera.zoom < kPointsMinZoom) {
+      if (_cad.isNotEmpty || _pointsMessage == null) {
+        setState(() {
+          _cad = [];
+          _loadedBounds = null;
+          _pointsMessage = 'Für Grenzpunkte näher heranzoomen';
+        });
+      }
+      return;
+    }
+
+    final b = camera.visibleBounds;
+    final lb = _loadedBounds;
+    if (lb != null && lb.contains(b.northWest) && lb.contains(b.southEast)) {
+      return;
+    }
+
+    final dLat = (b.north - b.south) * 0.3;
+    final dLon = (b.east - b.west) * 0.3;
+    final west = b.west - dLon;
+    final south = b.south - dLat;
+    final east = b.east + dLon;
+    final north = b.north + dLat;
+
+    setState(() => _loadingPoints = true);
+    final res = await GrenzpunktService.fetch(west, south, east, north);
+    if (!mounted) return;
+    setState(() {
+      _loadingPoints = false;
+      if (res.error != null) {
+        _loadedBounds = null;
+        _pointsMessage = 'Grenzpunkte nicht geladen: ${res.error}';
+        _pointsDiag = 'Fehler: ${res.error}';
+      } else {
+        _cad = res.points;
+        _loadedBounds = LatLngBounds(LatLng(south, west), LatLng(north, east));
+        _pointsMessage =
+            res.truncated ? 'Sehr viele Punkte: bitte näher heranzoomen' : null;
+        _pointsDiag = '${res.points.length} Grenzpunkte geladen';
+      }
+    });
+  }
+
+  // ------------------------------------------------------------ Punkte
+
+  Future<void> _savePoint(MarkedPoint p) async {
+    try {
+      await DbService.instance.upsert(p);
+      if (!mounted) return;
+      setState(() {
+        _saved[p.id] = p;
+        if (_targetId == p.id) _targetName = p.name;
+      });
+    } catch (e) {
+      _snack('Speichern nicht möglich: $e');
+    }
+  }
+
+  Future<void> _deletePoint(MarkedPoint p) async {
+    try {
+      await DbService.instance.delete(p.id);
+      if (!mounted) return;
+      setState(() {
+        _saved.remove(p.id);
+        if (_targetId == p.id) _clearTarget();
+      });
+    } catch (e) {
+      _snack('Löschen nicht möglich: $e');
+    }
+  }
+
+  Future<void> _openPointSheet(
+    MarkedPoint p, {
+    Map<String, dynamic>? attrs,
+  }) async {
+    Map<String, dynamic>? attributes = attrs;
+    if (attributes == null && p.attributesJson != null) {
+      try {
+        attributes =
+            (jsonDecode(p.attributesJson!) as Map).cast<String, dynamic>();
+      } catch (_) {}
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => PointSheet(
+        point: p,
+        attributes: attributes,
+        isTarget: _targetId == p.id,
+        onSave: _savePoint,
+        onToggleTarget: () {
+          Navigator.pop(ctx);
+          if (_targetId == p.id) {
+            setState(_clearTarget);
+          } else {
+            _setTarget(p);
+          }
+        },
+        onDelete: p.isOwn ? () => _deletePoint(p) : null,
+      ),
+    );
+  }
+
+  void _onCadastralTap(CadastralPoint c) {
+    final id = 'k:${c.id}';
+    final p = _saved[id] ??
+        MarkedPoint(
+          id: id,
+          kind: 'kataster',
+          name: 'Grenzpunkt ${c.title}',
+          lat: c.lat,
+          lon: c.lon,
+          attributesJson: jsonEncode(c.properties),
+          updatedAt: DateTime.now(),
+        );
+    _openPointSheet(p, attrs: c.properties);
+  }
+
+  int get _ownCount => _saved.values.where((p) => p.isOwn).length;
+
+  Future<void> _createOwnPoint(LatLng at) async {
+    final controller = TextEditingController(text: 'Punkt ${_ownCount + 1}');
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Eigenen Punkt anlegen'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          textCapitalization: TextCapitalization.sentences,
+          decoration: const InputDecoration(
+            labelText: 'Name',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Abbrechen'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Anlegen'),
+          ),
+        ],
+      ),
+    );
+    if (name == null || name.isEmpty) return;
+    final p = MarkedPoint(
+      id: 'e:${DateTime.now().microsecondsSinceEpoch}',
+      kind: 'eigen',
+      name: name,
+      lat: at.latitude,
+      lon: at.longitude,
+      updatedAt: DateTime.now(),
+    );
+    await _savePoint(p);
+    _snack('Punkt "$name" angelegt');
+  }
+
+  void _createOwnPointHere() {
+    final p = _pos;
+    if (p == null) {
+      _snack(_locationMessage ?? 'Noch kein GPS-Signal.');
+      return;
+    }
+    _createOwnPoint(LatLng(p.latitude, p.longitude));
+  }
+
+  Future<void> _openPoints() async {
+    final id = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => PointsScreen(points: _saved.values.toList()),
+      ),
+    );
+    if (id == null) return;
+    final p = _saved[id];
+    if (p == null) return;
+    if (_mapReady) {
+      setState(() => _follow = false);
+      _map.move(LatLng(p.lat, p.lon), 18);
+    }
+    _openPointSheet(p);
+  }
+
+  // ------------------------------------------------- Ziel und Messung
+
+  Future<void> _setTarget(MarkedPoint p) async {
+    setState(() {
+      _targetId = p.id;
+      _targetName = p.name;
+      _targetPos = LatLng(p.lat, p.lon);
+      _lastBand = null;
+    });
+    if (!_settings.hintSeen) {
+      _settings.hintSeen = true;
+      _settings.save();
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Wichtiger Hinweis'),
+          content: const Text(
+            'Die Zielführung ist eine Orientierungshilfe. Die Lage der '
+            'Katasterpunkte ist unterschiedlich genau, und das Handy-GPS '
+            'ist unter Baumkronen oft nur auf mehrere Meter genau. Den '
+            'Grenzstein findest du damit nur ungefähr, die verbindliche '
+            'Grenze klärt die Vermessung.',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Verstanden'),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
+  void _clearTarget() {
+    _targetId = null;
+    _targetName = '';
+    _targetPos = null;
+    _lastBand = null;
+    _cancelMeasure();
+  }
+
+  void _cancelMeasure() {
+    _measureTimer?.cancel();
+    _measureTimer = null;
+    _measuring = false;
+    _measureEnd = null;
+    _samples.clear();
+  }
+
+  void _startMeasure() {
+    if (_pos == null) {
+      _snack(_locationMessage ?? 'Noch kein GPS-Signal.');
+      return;
+    }
+    setState(() {
+      _samples.clear();
+      _measuring = true;
+      _measureEnd = DateTime.now().add(const Duration(seconds: 60));
+    });
+    _measureTimer?.cancel();
+    _measureTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      if (!mounted) return;
+      final end = _measureEnd;
+      if (end != null && DateTime.now().isAfter(end)) {
+        _finishMeasure();
+      } else {
+        setState(() {});
+      }
+    });
+  }
+
+  Future<void> _finishMeasure() async {
+    _measureTimer?.cancel();
+    _measureTimer = null;
+    final samples = List<_Sample>.of(_samples);
+    setState(() {
+      _measuring = false;
+      _measureEnd = null;
+      _samples.clear();
+    });
+
+    if (samples.length < 5) {
+      _snack('Zu wenige GPS-Werte für eine Messung. Bitte erneut versuchen.');
+      return;
+    }
+
+    // Gewichteter Mittelwert (genauere Werte zaehlen mehr)
+    double sw = 0, slat = 0, slon = 0;
+    for (final s in samples) {
+      final w = 1 / (s.acc * s.acc);
+      sw += w;
+      slat += w * s.lat;
+      slon += w * s.lon;
+    }
+    final mean = LatLng(slat / sw, slon / sw);
+
+    double sumSq = 0, accSum = 0;
+    for (final s in samples) {
+      final d = _distance.as(LengthUnit.Meter, mean, LatLng(s.lat, s.lon));
+      sumSq += d * d;
+      accSum += s.acc;
+    }
+    final spread = math.sqrt(sumSq / samples.length);
+    final meanAcc = accSum / samples.length;
+
+    final target = _targetPos;
+    String versatz = '';
+    if (target != null) {
+      final d = _distance.as(LengthUnit.Meter, mean, target);
+      final b = (_distance.bearing(mean, target) + 360) % 360;
+      versatz = '\n\nAbstand zum Zielpunkt: ${formatMeters(d)} '
+          'in Richtung ${cardinal(b)}';
+    }
+
+    if (!mounted) return;
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Messung abgeschlossen'),
+        content: Text(
+          'Mittlere Position aus ${samples.length} GPS-Werten:\n'
+          '${mean.latitude.toStringAsFixed(6)}, ${mean.longitude.toStringAsFixed(6)}\n\n'
+          'Streuung ± ${spread.toStringAsFixed(1)} m, '
+          'mittlere GPS-Genauigkeit ± ${meanAcc.toStringAsFixed(1)} m'
+          '$versatz',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'discard'),
+            child: const Text('Verwerfen'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'save'),
+            child: const Text('Messung speichern'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, 'found'),
+            child: const Text('Gefunden'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null || choice == 'discard') return;
+
+    final id = _targetId;
+    if (id == null) return;
+    MarkedPoint? base = _saved[id];
+    if (base == null) {
+      // Katasterpunkt ohne bisherigen Eintrag: aus Ziel neu anlegen
+      final t = _targetPos;
+      if (t == null) return;
+      base = MarkedPoint(
+        id: id,
+        kind: id.startsWith('e:') ? 'eigen' : 'kataster',
+        name: _targetName,
+        lat: t.latitude,
+        lon: t.longitude,
+        updatedAt: DateTime.now(),
+      );
+      for (final c in _cad) {
+        if ('k:${c.id}' == id) {
+          base = MarkedPoint(
+            id: id,
+            kind: 'kataster',
+            name: _targetName,
+            lat: c.lat,
+            lon: c.lon,
+            attributesJson: jsonEncode(c.properties),
+            updatedAt: DateTime.now(),
+          );
+        }
+      }
+    }
+    await _savePoint(
+      base.copyWith(
+        status: choice == 'found' ? PointStatus.found : null,
+        measuredLat: mean.latitude,
+        measuredLon: mean.longitude,
+        measuredAccuracy: meanAcc,
+        measuredSamples: samples.length,
+        measuredAt: DateTime.now(),
+      ),
+    );
+    _snack(choice == 'found' ? 'Als gefunden gespeichert' : 'Messung gespeichert');
   }
 
   // ------------------------------------------------------------- Aktionen
@@ -268,6 +744,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     required bool transparent,
     required double opacity,
     List<String>? layerNames,
+    double minZoom = 0,
+    double maxZoom = 22,
   }) {
     if (svc == null || !svc.usable || _provider == null) return null;
     final caps = svc.caps!;
@@ -275,7 +753,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (names.isEmpty) return null;
 
     return TileLayer(
-      key: ValueKey('${svc.def.id}:${names.join('|')}'),
+      key: ValueKey('${svc.def.id}:${names.join('|')}:$minZoom:$maxZoom'),
       wmsOptions: WMSTileLayerOptions(
         baseUrl: caps.getMapUrl,
         layers: names,
@@ -288,8 +766,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       ),
       tileProvider: _provider,
       userAgentPackageName: kAppPackage,
+      minZoom: minZoom,
+      maxZoom: maxZoom,
       maxNativeZoom: 20,
-      maxZoom: 22,
+      panBuffer: 2,
+      keepBuffer: 4,
       tileDisplay: TileDisplay.instantaneous(opacity: opacity),
       errorTileCallback: (tile, error, stackTrace) {
         _tileErrors.update(svc.def.id, (v) => v + 1, ifAbsent: () => 1);
@@ -304,27 +785,62 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final s = _settings;
     final layers = <Widget>[];
 
-    final baseId = s.base == BaseMap.topo ? 'topo' : 'dop';
-    final base = _wmsLayer(_services[baseId], transparent: false, opacity: 1);
-    if (base != null) layers.add(base);
+    // Luftbild nur ab der Zoomstufe, in der der Dienst Bilder liefert;
+    // darunter zeigt die Karte RP (sonst waere das Bild weiss).
+    final aerialSvc = _services['dop'];
+    double aerialMin = 0;
+    final aerialWanted = s.base == BaseMap.aerial && aerialSvc?.usable == true;
+    if (aerialWanted) {
+      aerialMin = aerialSvc!.minZoomFor(WmsCatalog.defaultLayers(aerialSvc));
+    }
+
+    final topo = _wmsLayer(
+      _services['topo'],
+      transparent: false,
+      opacity: 1,
+      maxZoom: (aerialWanted && aerialMin > 0) ? aerialMin - 0.01 : 22,
+    );
+    if (topo != null && !(aerialWanted && aerialMin == 0)) layers.add(topo);
+
+    if (aerialWanted) {
+      final aerial = _wmsLayer(
+        aerialSvc,
+        transparent: false,
+        opacity: 1,
+        minZoom: aerialMin,
+      );
+      if (aerial != null) layers.add(aerial);
+    }
 
     if (s.flurOn) {
+      final flurSvc = _services['flur'];
+      final names = s.flurLayers ??
+          (flurSvc == null ? <String>[] : WmsCatalog.defaultLayers(flurSvc));
       final flur = _wmsLayer(
-        _services['flur'],
+        flurSvc,
         transparent: true,
         opacity: s.flurOpacity,
         layerNames: s.flurLayers,
+        minZoom: flurSvc == null ? 0 : flurSvc.minZoomFor(names),
       );
       if (flur != null) layers.add(flur);
     }
     if (s.gstOn) {
-      final gst =
-          _wmsLayer(_services['gst'], transparent: true, opacity: 0.6);
+      final gstSvc = _services['gst'];
+      final gst = _wmsLayer(
+        gstSvc,
+        transparent: true,
+        opacity: 0.6,
+        minZoom: gstSvc == null
+            ? 0
+            : gstSvc.minZoomFor(WmsCatalog.defaultLayers(gstSvc)),
+      );
       if (gst != null) layers.add(gst);
     }
 
     final pos = _pos;
     final here = pos == null ? null : LatLng(pos.latitude, pos.longitude);
+    final target = _targetPos;
 
     return FlutterMap(
       mapController: _map,
@@ -337,12 +853,42 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
         ),
         onMapReady: _onMapReady,
-        onPositionChanged: (camera, hasGesture) {
-          if (hasGesture && _follow) setState(() => _follow = false);
-        },
+        onPositionChanged: _onCameraChanged,
+        onLongPress: (tapPosition, point) => _createOwnPoint(point),
       ),
       children: [
         ...layers,
+        if (here != null && target != null)
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: [here, target],
+                strokeWidth: 3,
+                color: const Color.fromARGB(200, 183, 28, 28),
+              ),
+            ],
+          ),
+        if (target != null)
+          CircleLayer(
+            circles: [
+              CircleMarker(
+                point: target,
+                radius: 5,
+                useRadiusInMeter: true,
+                color: const Color.fromARGB(25, 183, 28, 28),
+                borderColor: const Color.fromARGB(180, 183, 28, 28),
+                borderStrokeWidth: 1.5,
+              ),
+              CircleMarker(
+                point: target,
+                radius: 2,
+                useRadiusInMeter: true,
+                color: const Color.fromARGB(40, 183, 28, 28),
+                borderColor: const Color.fromARGB(200, 183, 28, 28),
+                borderStrokeWidth: 1.5,
+              ),
+            ],
+          ),
         if (pos != null && here != null)
           CircleLayer(
             circles: [
@@ -356,6 +902,37 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               ),
             ],
           ),
+        if (s.pointsOn && _cad.isNotEmpty)
+          MarkerLayer(
+            markers: [
+              for (final c in _cad)
+                Marker(
+                  point: LatLng(c.lat, c.lon),
+                  width: 40,
+                  height: 40,
+                  child: CadastralMarker(
+                    status: _saved['k:${c.id}']?.status ?? PointStatus.open,
+                    isTarget: _targetId == 'k:${c.id}',
+                    onTap: () => _onCadastralTap(c),
+                  ),
+                ),
+            ],
+          ),
+        MarkerLayer(
+          markers: [
+            for (final p in _saved.values.where((p) => p.isOwn))
+              Marker(
+                point: LatLng(p.lat, p.lon),
+                width: 40,
+                height: 40,
+                child: OwnPointMarker(
+                  status: p.status,
+                  isTarget: _targetId == p.id,
+                  onTap: () => _openPointSheet(p),
+                ),
+              ),
+          ],
+        ),
         if (here != null)
           ValueListenableBuilder<double?>(
             valueListenable: _heading.heading,
@@ -365,7 +942,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   point: here,
                   width: 56,
                   height: 56,
-                  child: _PositionMarker(heading: h),
+                  child: PositionMarker(heading: h),
                 ),
               ],
             ),
@@ -375,6 +952,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   // ------------------------------------------------------- Oberfläche
+
+  Widget _chip(String text, {required Color bg, required Color fg, VoidCallback? onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Material(
+        elevation: 3,
+        borderRadius: BorderRadius.circular(12),
+        color: bg,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Text(text, style: TextStyle(color: fg, fontSize: 13)),
+        ),
+      ),
+    );
+  }
 
   Widget _buildStatus() {
     final p = _pos;
@@ -407,38 +999,61 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         .map((d) => d.title)
         .toList();
 
+    final notes = <String>[
+      if (_settings.pointsOn && _loadingPoints) 'Grenzpunkte werden geladen …',
+      if (_settings.pointsOn && !_loadingPoints && _pointsMessage != null)
+        _pointsMessage!,
+      if (_dbError != null) 'Punktspeicher nicht verfügbar: $_dbError',
+    ];
+
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.all(10),
         child: Align(
           alignment: Alignment.topLeft,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Material(
-                elevation: 3,
-                borderRadius: BorderRadius.circular(12),
-                color: Colors.white,
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxWidth: MediaQuery.of(context).size.width - 100,
-                    ),
-                    child: Row(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: MediaQuery.of(context).size.width - 100,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Material(
+                  elevation: 3,
+                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.white,
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: Column(
                       mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(icon, color: color),
-                        const SizedBox(width: 8),
-                        Flexible(
-                          child: Text(
-                            text,
-                            style: TextStyle(
-                              color: color,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(icon, color: color),
+                            const SizedBox(width: 8),
+                            Flexible(
+                              child: Text(
+                                text,
+                                style: TextStyle(
+                                  color: color,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        ValueListenableBuilder<double>(
+                          valueListenable: _zoom,
+                          builder: (context, z, _) => Text(
+                            'Zoomstufe ${z.toStringAsFixed(1).replaceAll('.', ',')}',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Colors.black54,
                             ),
                           ),
                         ),
@@ -446,32 +1061,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     ),
                   ),
                 ),
-              ),
-              if (missing.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                GestureDetector(
-                  onTap: _openDiagnostics,
-                  child: Material(
-                    elevation: 3,
-                    borderRadius: BorderRadius.circular(12),
-                    color: Colors.red.shade50,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                      child: Text(
-                        'Nicht verfügbar: ${missing.join(', ')}\nTippen für Details',
-                        style: TextStyle(
-                          color: Colors.red.shade900,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ),
+                for (final n in notes) ...[
+                  const SizedBox(height: 6),
+                  _chip(n, bg: Colors.white, fg: Colors.black87),
+                ],
+                if (missing.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  _chip(
+                    'Nicht verfügbar: ${missing.join(', ')}\nTippen für Details',
+                    bg: Colors.red.shade50,
+                    fg: Colors.red.shade900,
+                    onTap: _openDiagnostics,
                   ),
-                ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -508,6 +1112,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               ),
               const SizedBox(height: 12),
               FloatingActionButton(
+                heroTag: 'point',
+                tooltip: 'Punkt an meiner Position anlegen',
+                onPressed: _createOwnPointHere,
+                child: const Icon(Icons.add_location_alt),
+              ),
+              const SizedBox(height: 12),
+              FloatingActionButton(
                 heroTag: 'me',
                 tooltip: 'Auf meine Position zentrieren',
                 backgroundColor: _follow ? primary : null,
@@ -540,6 +1151,69 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               style: const TextStyle(fontSize: 10, color: Colors.black87),
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildGuidance() {
+    final target = _targetPos;
+    if (target == null) return const SizedBox.shrink();
+    return Positioned(
+      left: 8,
+      right: 8,
+      bottom: 30,
+      child: SafeArea(
+        top: false,
+        child: ValueListenableBuilder<double?>(
+          valueListenable: _heading.heading,
+          builder: (context, h, _) {
+            final pos = _pos;
+            double? dist;
+            double? bearing;
+            double? arrow;
+            if (pos != null) {
+              final here = LatLng(pos.latitude, pos.longitude);
+              dist = _distance.as(LengthUnit.Meter, here, target);
+              bearing = (_distance.bearing(here, target) + 360) % 360;
+              double? facing = h;
+              if (facing == null && pos.speed > 0.8 && pos.heading >= 0) {
+                facing = pos.heading;
+              }
+              if (facing != null) arrow = (bearing - facing + 360) % 360;
+            }
+            final end = _measureEnd;
+            final left = end == null
+                ? 0
+                : math.max(0, end.difference(DateTime.now()).inSeconds);
+            return GuidancePanel(
+              name: _targetName,
+              distanceM: dist,
+              arrowDeg: arrow,
+              bearingDeg: bearing,
+              accuracyM: pos?.accuracy,
+              measuring: _measuring,
+              secondsLeft: left,
+              samples: _samples.length,
+              onMeasure: _startMeasure,
+              onCancelMeasure: () => setState(_cancelMeasure),
+              onDetails: () {
+                final id = _targetId;
+                final p = id == null ? null : _saved[id];
+                if (p != null) {
+                  _openPointSheet(p);
+                } else {
+                  for (final c in _cad) {
+                    if ('k:${c.id}' == id) {
+                      _onCadastralTap(c);
+                      return;
+                    }
+                  }
+                }
+              },
+              onClose: () => setState(_clearTarget),
+            );
+          },
         ),
       ),
     );
@@ -650,6 +1324,25 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           ],
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
+            title: const Text('Grenzpunkte anzeigen'),
+            subtitle: Text(
+              'Ab Zoomstufe ${kPointsMinZoom.round()}, antippen für Details und Ziel',
+            ),
+            value: s.pointsOn,
+            onChanged: (v) {
+              _change(setSheet, () {
+                _settings.pointsOn = v;
+                if (!v) {
+                  _cad = [];
+                  _loadedBounds = null;
+                  _pointsMessage = null;
+                }
+              });
+              if (v && _mapReady) _scheduleLoadPoints(_map.camera);
+            },
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
             title: const Text('Genauigkeit des Katasters'),
             subtitle: const Text('Farbflächen der Lagegenauigkeit'),
             value: s.gstOn,
@@ -666,6 +1359,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             },
           ),
           const Divider(),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.place_outlined),
+            title: Text('Meine Punkte (${_saved.length})'),
+            onTap: () {
+              Navigator.of(ctx).pop();
+              _openPoints();
+            },
+          ),
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.fact_check_outlined),
@@ -696,6 +1398,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           services: _services,
           tileErrors: Map<String, int>.of(_tileErrors),
           lastTileError: _lastTileError,
+          extraLines: [
+            'Grenzpunkte (OGC API): ${_pointsDiag ?? 'noch nicht abgefragt (ab Zoomstufe ${kPointsMinZoom.round()})'}',
+            if (_dbError != null) 'Punktspeicher: $_dbError',
+          ],
         ),
       ),
     );
@@ -722,12 +1428,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         title: const Text('Info und Quellen'),
         content: SingleChildScrollView(
           child: Text(
-            'Kartendaten: ${attributionText()}\n\n'
+            'Kartendaten und Grenzpunkte: ${attributionText()}\n\n'
             'Die Flurkarte ist eine Orientierungshilfe und keine '
             'rechtsverbindliche Grenzfeststellung. Die Lage der '
             'Katasterpunkte ist unterschiedlich genau; eine Übertragung in '
             'die Örtlichkeit erfordert fachkundige Bewertung. Die Genauigkeit '
-            'des Handy-GPS liegt unter Baumkronen oft bei mehreren Metern.',
+            'des Handy-GPS liegt unter Baumkronen oft bei mehreren Metern. '
+            'Zusätzlich weicht das amtliche Koordinatensystem (ETRS89) '
+            'systematisch um etwa einen Meter vom GPS-System ab; das ist hier '
+            'nicht herausgerechnet.',
           ),
         ),
         actions: [
@@ -773,40 +1482,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           _buildStatus(),
           _buildButtons(),
           _buildAttribution(),
+          _buildGuidance(),
         ],
       ),
-    );
-  }
-}
-
-class _PositionMarker extends StatelessWidget {
-  final double? heading;
-  const _PositionMarker({required this.heading});
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        if (heading != null)
-          Transform.rotate(
-            angle: heading! * math.pi / 180,
-            child: const Icon(
-              Icons.navigation,
-              size: 52,
-              color: Color.fromARGB(170, 21, 101, 192),
-            ),
-          ),
-        Container(
-          width: 18,
-          height: 18,
-          decoration: BoxDecoration(
-            color: const Color(0xFF1565C0),
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 3),
-          ),
-        ),
-      ],
     );
   }
 }

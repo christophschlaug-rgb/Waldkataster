@@ -9,12 +9,14 @@ class DiagnosticsScreen extends StatelessWidget {
   final Map<String, WmsService> services;
   final Map<String, int> tileErrors;
   final String? lastTileError;
+  final List<String> extraLines;
 
   const DiagnosticsScreen({
     super.key,
     required this.services,
     required this.tileErrors,
     required this.lastTileError,
+    this.extraLines = const [],
   });
 
   String _details(WmsService s) {
@@ -33,6 +35,12 @@ class DiagnosticsScreen extends StatelessWidget {
       lines.add(
         'Ebenen (${names.length}): $shown${names.length > 12 ? ' …' : ''}',
       );
+      final minZ = caps.minZoomFor(WmsCatalog.defaultLayers(s));
+      lines.add(
+        minZ > 0
+            ? 'Zeigt Bilder ab Zoomstufe ${minZ.toStringAsFixed(1)}'
+            : 'Keine Maßstabsgrenze erkannt',
+      );
       lines.add('Kartenadresse: ${caps.getMapUrl}');
     }
     final errors = tileErrors[s.def.id] ?? 0;
@@ -48,6 +56,11 @@ class DiagnosticsScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(12),
         children: [
+          for (final line in extraLines)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Text(line, style: const TextStyle(fontSize: 13)),
+            ),
           for (final def in kServiceDefs)
             Card(
               child: ListTile(
