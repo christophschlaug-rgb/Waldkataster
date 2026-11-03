@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -13,12 +14,24 @@ class WmsLayerInfo {
   final int depth;
   final bool hasNamedAncestor;
 
+  /// Maßstabsgrenzen der Ebene (Nenner), falls der Dienst sie angibt.
+  final double? minScaleDenom;
+  final double? maxScaleDenom;
+
   const WmsLayerInfo({
     required this.name,
     required this.title,
     required this.depth,
     required this.hasNamedAncestor,
+    this.minScaleDenom,
+    this.maxScaleDenom,
   });
+}
+
+/// Zoomstufe (Web-Mercator, Breite ca. 50 Grad), bei der der Maßstab dem
+/// angegebenen Nenner entspricht (Pixelgröße 0,28 mm).
+double zoomForScaleDenominator(double denom) {
+  return math.log(100623.4 / (denom * 0.00028)) / math.ln2;
 }
 
 /// Was die App aus der Dienstbeschreibung (GetCapabilities) wissen muss.
@@ -37,6 +50,21 @@ class WmsCapabilities {
 
   /// Die Karte arbeitet in Web-Mercator (EPSG:3857).
   bool get supportsWebMercator => srs.contains('EPSG:3857');
+
+  /// Ab welcher Zoomstufe die gewaehlten Ebenen Bilder liefern. Darunter
+  /// waeren die Kacheln leer bzw. weiss, weil der Dienst dort keine Daten
+  /// zeigt. 0 = keine Einschraenkung bekannt.
+  double minZoomFor(List<String> names) {
+    double? best;
+    for (final l in layers) {
+      if (!names.contains(l.name)) continue;
+      final d = l.maxScaleDenom;
+      final z = (d == null || d <= 0) ? 0.0 : zoomForScaleDenominator(d);
+      if (best == null || z < best) best = z;
+    }
+    if (best == null || best <= 0) return 0;
+    return best.clamp(8.0, 16.0).toDouble();
+  }
 
   String pickFormat({required bool transparent, bool preferJpeg = false}) {
     final f = formats.map((e) => e.toLowerCase()).toList();
@@ -67,6 +95,8 @@ class WmsService {
   });
 
   bool get usable => caps != null && caps!.supportsWebMercator;
+
+  double minZoomFor(List<String> names) => caps?.minZoomFor(names) ?? 0;
 
   String get problem {
     if (caps == null) return error ?? 'Dienstbeschreibung nicht lesbar';
@@ -151,10 +181,34 @@ WmsCapabilities parseCapabilities(String text, String capabilitiesUrl) {
 
   // Ebenen (benannte Ebenen, mit Hierarchie)
   final layers = <WmsLayerInfo>[];
-  void walk(XmlElement el, int depth, bool namedAncestor) {
+  double? parseNum(String? t) =>
+      t == null ? null : double.tryParse(t.trim().replaceAll(',', '.'));
+
+  void walk(
+    XmlElement el,
+    int depth,
+    bool namedAncestor,
+    double? parentMin,
+    double? parentMax,
+  ) {
     final name = _childText(el, 'Name');
     final title = _childText(el, 'Title');
     final named = name != null && name.isNotEmpty;
+
+    // Massstabsgrenzen: WMS 1.3.0 (Denominatoren) oder 1.1.1 (ScaleHint)
+    var minD = parseNum(_childText(el, 'MinScaleDenominator')) ?? parentMin;
+    var maxD = parseNum(_childText(el, 'MaxScaleDenominator')) ?? parentMax;
+    for (final c in el.children.whereType<XmlElement>()) {
+      if (c.name.local == 'ScaleHint') {
+        const k = 0.00028 * 1.4142135623730951;
+        final lo = parseNum(c.getAttribute('min'));
+        final hi = parseNum(c.getAttribute('max'));
+        if (lo != null && lo > 0) minD = lo / k;
+        if (hi != null && hi > 0 && hi < 1e6) maxD = hi / k;
+      }
+    }
+    if (maxD != null && maxD > 5e7) maxD = null; // praktisch unbegrenzt
+
     if (named) {
       layers.add(
         WmsLayerInfo(
@@ -162,19 +216,21 @@ WmsCapabilities parseCapabilities(String text, String capabilitiesUrl) {
           title: (title == null || title.isEmpty) ? name : title,
           depth: depth,
           hasNamedAncestor: namedAncestor,
+          minScaleDenom: minD,
+          maxScaleDenom: maxD,
         ),
       );
     }
     for (final child in el.children.whereType<XmlElement>()) {
       if (child.name.local == 'Layer') {
-        walk(child, depth + 1, namedAncestor || named);
+        walk(child, depth + 1, namedAncestor || named, minD, maxD);
       }
     }
   }
 
   for (final capability in _byLocal(doc, 'Capability')) {
     for (final child in capability.children.whereType<XmlElement>()) {
-      if (child.name.local == 'Layer') walk(child, 0, false);
+      if (child.name.local == 'Layer') walk(child, 0, false, null, null);
     }
     break;
   }
