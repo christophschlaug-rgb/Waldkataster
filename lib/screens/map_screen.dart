@@ -681,7 +681,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       }
     }
     await _savePoint(
-      base.copyWith(
+      base!.copyWith(
         status: choice == 'found' ? PointStatus.found : null,
         measuredLat: mean.latitude,
         measuredLon: mean.longitude,
