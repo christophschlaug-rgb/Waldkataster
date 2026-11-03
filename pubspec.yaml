@@ -1,7 +1,7 @@
 name: waldkataster_app
 description: "Waldkataster: Flurkarte, Luftbild und GPS-Position fuer den Wald (Rheinland-Pfalz)."
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -29,6 +29,12 @@ dependencies:
 
   # Einstellungen (keine Zugangsdaten)
   shared_preferences: ^2.2.3
+
+  # Verschluesselte lokale Datenbank fuer eigene Punkte und Grenzpunkt-Status;
+  # der Schluessel liegt im Android Keystore
+  sqflite_sqlcipher: ^2.2.1
+  flutter_secure_storage: ^9.2.2
+  path: ^1.9.0
 
 dev_dependencies:
   flutter_test:

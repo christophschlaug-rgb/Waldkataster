@@ -1,7 +1,8 @@
 # Waldkataster
 
 Android-App für den Wald in Rheinland-Pfalz: Flurkarte und Luftbild mit
-eigener GPS-Position. (Meilenstein 1 der Anforderungen.)
+eigener GPS-Position, Grenzpunkte und Zielführung.
+(Meilenstein 1 und 2 der Anforderungen.)
 
 ## Funktionen in dieser Version
 
@@ -15,6 +16,20 @@ eigener GPS-Position. (Meilenstein 1 der Anforderungen.)
 - Display wach halten (optional)
 - Quellenangabe der Geodaten in der Karte
 - "Dienste prüfen": zeigt, welche Kartendienste erreichbar sind
+
+### Neu in Version 1.1 (Meilenstein 2)
+
+- Grenzpunkte aus dem Liegenschaftskataster (ab Zoomstufe 16), antippbar
+- Zielführung: Entfernung, Richtungspfeil und Himmelsrichtung, Vibration bei
+  10 m, 5 m und 2 m Entfernung, Ringe um das Ziel
+- Positionsmessung über 60 Sekunden (gewichteter Mittelwert, Streuung)
+- Status je Grenzpunkt (nicht gesucht, gefunden, nicht gefunden, Stein
+  vermutlich unter der Erde), Notiz und gemessene Position
+- Eigene Punkte (langes Drücken auf die Karte oder Knopf "Punkt an meiner
+  Position"), Liste "Meine Punkte"
+- Luftbild und Flurkarte erscheinen erst ab der Zoomstufe, in der der Dienst
+  Bilder liefert; darunter zeigt die Karte RP (kein weißes Bild mehr)
+- Alle Punkte liegen verschlüsselt auf dem Gerät
 
 ## Einrichtung (einmalig)
 
