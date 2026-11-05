@@ -49,6 +49,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   final HeadingTracker _heading = HeadingTracker();
   final Distance _distance = const Distance();
   final ValueNotifier<double> _zoom = ValueNotifier<double>(9);
+  // Nur in halben Zoomstufen aktualisiert, damit die Marker beim Zoomen
+  // nicht dauernd neu gezeichnet werden.
+  final ValueNotifier<double> _dotZoom = ValueNotifier<double>(9);
 
   MapSettings _settings = MapSettings();
   Map<String, WmsService> _services = {};
@@ -106,6 +109,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _heading.heading.removeListener(_onHeading);
     _heading.dispose();
     _zoom.dispose();
+    _dotZoom.dispose();
     _client?.close();
     super.dispose();
   }
@@ -289,11 +293,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       if (h != null) _map.rotate(-h);
     }
     _zoom.value = _map.camera.zoom;
+    _dotZoom.value = (_map.camera.zoom * 2).floor() / 2;
     _scheduleLoadPoints(_map.camera);
   }
 
   void _onCameraChanged(MapCamera camera, bool hasGesture) {
     _zoom.value = camera.zoom;
+    final q = (camera.zoom * 2).floor() / 2;
+    if (q != _dotZoom.value) _dotZoom.value = q;
     if (hasGesture && _follow) setState(() => _follow = false);
     _scheduleLoadPoints(camera);
   }
@@ -357,7 +364,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         _loadedBounds = LatLngBounds(LatLng(south, west), LatLng(north, east));
         _pointsMessage =
             res.truncated ? 'Sehr viele Punkte: bitte näher heranzoomen' : null;
-        _pointsDiag = '${res.points.length} Grenzpunkte geladen';
+        _pointsDiag = '${res.points.length} Grenzpunkte geladen '
+            '(${res.pages} Seite(n)'
+            '${res.matched != null ? ', laut Dienst ${res.matched} im Ausschnitt' : ''})';
       }
     });
   }
@@ -439,6 +448,50 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   int get _ownCount => _saved.values.where((p) => p.isOwn).length;
+
+  double _meters(LatLng from, double lat, double lon) {
+    final dy = (lat - from.latitude) * 110574.0;
+    final dx = (lon - from.longitude) *
+        111320.0 *
+        math.cos(from.latitude * math.pi / 180);
+    return math.sqrt(dx * dx + dy * dy);
+  }
+
+  /// Antippen der Karte: der naechste Punkt in ca. 26 Bildpunkten Umkreis
+  /// wird geoeffnet. So lassen sich auch dicht liegende Punkte treffen.
+  void _onMapTap(LatLng tap) {
+    final zoom = _map.camera.zoom;
+    final metersPerPixel =
+        156543.034 * math.cos(tap.latitude * math.pi / 180) / math.pow(2, zoom);
+    double best = 26 * metersPerPixel;
+    CadastralPoint? cad;
+    MarkedPoint? own;
+
+    if (_settings.pointsOn) {
+      for (final c in _cad) {
+        final d = _meters(tap, c.lat, c.lon);
+        if (d < best) {
+          best = d;
+          cad = c;
+          own = null;
+        }
+      }
+    }
+    for (final p in _saved.values) {
+      if (!p.isOwn) continue;
+      final d = _meters(tap, p.lat, p.lon);
+      if (d < best) {
+        best = d;
+        own = p;
+        cad = null;
+      }
+    }
+    if (own != null) {
+      _openPointSheet(own);
+    } else if (cad != null) {
+      _onCadastralTap(cad);
+    }
+  }
 
   Future<void> _createOwnPoint(LatLng at) async {
     final controller = TextEditingController(text: 'Punkt ${_ownCount + 1}');
@@ -854,6 +907,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ),
         onMapReady: _onMapReady,
         onPositionChanged: _onCameraChanged,
+        onTap: (tapPosition, point) => _onMapTap(point),
         onLongPress: (tapPosition, point) => _createOwnPoint(point),
       ),
       children: [
@@ -903,35 +957,47 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             ],
           ),
         if (s.pointsOn && _cad.isNotEmpty)
-          MarkerLayer(
-            markers: [
-              for (final c in _cad)
-                Marker(
-                  point: LatLng(c.lat, c.lon),
-                  width: 40,
-                  height: 40,
-                  child: CadastralMarker(
-                    status: _saved['k:${c.id}']?.status ?? PointStatus.open,
-                    isTarget: _targetId == 'k:${c.id}',
-                    onTap: () => _onCadastralTap(c),
-                  ),
-                ),
-            ],
+          ValueListenableBuilder<double>(
+            valueListenable: _dotZoom,
+            builder: (context, z, _) {
+              final dot = dotSizeForZoom(z);
+              return MarkerLayer(
+                markers: [
+                  for (final c in _cad)
+                    Marker(
+                      point: LatLng(c.lat, c.lon),
+                      width: dot + 12,
+                      height: dot + 12,
+                      child: CadastralMarker(
+                        status: _saved['k:${c.id}']?.status ?? PointStatus.open,
+                        isTarget: _targetId == 'k:${c.id}',
+                        dot: dot,
+                      ),
+                    ),
+                ],
+              );
+            },
           ),
-        MarkerLayer(
-          markers: [
-            for (final p in _saved.values.where((p) => p.isOwn))
-              Marker(
-                point: LatLng(p.lat, p.lon),
-                width: 40,
-                height: 40,
-                child: OwnPointMarker(
-                  status: p.status,
-                  isTarget: _targetId == p.id,
-                  onTap: () => _openPointSheet(p),
-                ),
-              ),
-          ],
+        ValueListenableBuilder<double>(
+          valueListenable: _dotZoom,
+          builder: (context, z, _) {
+            final dot = dotSizeForZoom(z);
+            return MarkerLayer(
+              markers: [
+                for (final p in _saved.values.where((p) => p.isOwn))
+                  Marker(
+                    point: LatLng(p.lat, p.lon),
+                    width: dot + 14,
+                    height: dot + 14,
+                    child: OwnPointMarker(
+                      status: p.status,
+                      isTarget: _targetId == p.id,
+                      dot: dot,
+                    ),
+                  ),
+              ],
+            );
+          },
         ),
         if (here != null)
           ValueListenableBuilder<double?>(
