@@ -23,6 +23,15 @@ String cardinal(double deg) {
   return names[i];
 }
 
+/// Durchmesser der Punktmarkierung je Zoomstufe: weit weg klein, nah dran
+/// groesser (Zoomstufe 16 = 6 px, ab Zoomstufe 21 = 20 px).
+double dotSizeForZoom(double zoom) {
+  final v = 6 + (zoom - 16) * 2.8;
+  if (v < 6) return 6;
+  if (v > 20) return 20;
+  return v;
+}
+
 String formatMeters(double m) {
   if (m < 10) return '${m.toStringAsFixed(1).replaceAll('.', ',')} m';
   return '${m.round()} m';
@@ -61,25 +70,24 @@ class PositionMarker extends StatelessWidget {
   }
 }
 
-/// Grenzpunkt aus dem Kataster (Kreis, Farbe = Status).
+/// Grenzpunkt aus dem Kataster (Kreis, Farbe = Status). Nur Anzeige;
+/// das Antippen wertet die Karte selbst aus (naechster Punkt).
 class CadastralMarker extends StatelessWidget {
   final PointStatus status;
   final bool isTarget;
-  final VoidCallback onTap;
+  final double dot;
 
   const CadastralMarker({
     super.key,
     required this.status,
     required this.isTarget,
-    required this.onTap,
+    required this.dot,
   });
 
   @override
   Widget build(BuildContext context) {
-    final size = isTarget ? 26.0 : 18.0;
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
+    final size = isTarget ? dot + 6 : dot;
+    return IgnorePointer(
       child: Center(
         child: Container(
           width: size,
@@ -89,7 +97,7 @@ class CadastralMarker extends StatelessWidget {
             shape: BoxShape.circle,
             border: Border.all(
               color: isTarget ? Colors.black : Colors.white,
-              width: isTarget ? 3 : 2,
+              width: isTarget ? 2.5 : (dot < 9 ? 1 : 1.5),
             ),
           ),
         ),
@@ -102,21 +110,19 @@ class CadastralMarker extends StatelessWidget {
 class OwnPointMarker extends StatelessWidget {
   final PointStatus status;
   final bool isTarget;
-  final VoidCallback onTap;
+  final double dot;
 
   const OwnPointMarker({
     super.key,
     required this.status,
     required this.isTarget,
-    required this.onTap,
+    required this.dot,
   });
 
   @override
   Widget build(BuildContext context) {
-    final size = isTarget ? 22.0 : 16.0;
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
+    final size = (isTarget ? dot + 6 : dot) * 0.85;
+    return IgnorePointer(
       child: Center(
         child: Transform.rotate(
           angle: math.pi / 4,
@@ -127,7 +133,7 @@ class OwnPointMarker extends StatelessWidget {
               color: statusColor(status),
               border: Border.all(
                 color: isTarget ? Colors.black : Colors.white,
-                width: isTarget ? 3 : 2,
+                width: isTarget ? 2.5 : (dot < 9 ? 1 : 1.5),
               ),
             ),
           ),
