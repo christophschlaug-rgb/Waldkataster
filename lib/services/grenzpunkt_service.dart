@@ -61,7 +61,7 @@ class GrenzpunktService {
     double east,
     double north, {
     int limit = 2000,
-    int maxPages = 10,
+    int maxPages = 20,
   }) async {
     final bbox = [west, south, east, north]
         .map((v) => v.toStringAsFixed(6))
@@ -137,6 +137,9 @@ class GrenzpunktService {
             }
           }
         }
+        final pageCount = (data['features'] as List).length;
+        if (pageCount == 0) next = null;
+        if (matched != null && seen.length >= matched) next = null;
         url = next;
       }
       return GrenzpunktResult(
