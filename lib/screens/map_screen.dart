@@ -12,7 +12,14 @@ import 'package:latlong2/latlong.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../app_config.dart';
+import '../models/forest_models.dart';
 import '../models/marked_point.dart';
+import '../services/flurstueck_service.dart';
+import '../services/geo_utils.dart';
+import '../widgets/stand_editor.dart';
+import 'forest_screen.dart';
+import 'object_sheet.dart';
+import 'parcel_screen.dart';
 import '../services/db_service.dart';
 import '../services/grenzpunkt_service.dart';
 import '../services/heading_tracker.dart';
@@ -32,6 +39,13 @@ class _Sample {
   final double lon;
   final double acc;
   const _Sample(this.lat, this.lon, this.acc);
+}
+
+class _ParcelView {
+  final Parcel parcel;
+  final ParcelGeometry geometry;
+  final LatLng centroid;
+  _ParcelView(this.parcel, this.geometry) : centroid = geometry.centroid;
 }
 
 class MapScreen extends StatefulWidget {
@@ -92,6 +106,25 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Timer? _measureTimer;
   final List<_Sample> _samples = [];
 
+  // Mein Wald
+  List<_ParcelView> _parcels = [];
+  List<Dept> _depts = [];
+  List<ForestObject> _objects = [];
+  bool _pickMode = false;
+  bool _pickBusy = false;
+  FlurstueckHit? _pending;
+
+  static const List<Color> _deptPalette = [
+    Color(0xFF8E24AA),
+    Color(0xFF00897B),
+    Color(0xFFD81B60),
+    Color(0xFF3949AB),
+    Color(0xFF7CB342),
+    Color(0xFF6D4C41),
+    Color(0xFF00ACC1),
+    Color(0xFFF4511E),
+  ];
+
   @override
   void initState() {
     super.initState();
@@ -142,9 +175,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
       Map<String, MarkedPoint> saved = {};
       String? dbError;
+      List<Parcel> parcels = [];
+      List<Dept> depts = [];
+      List<ForestObject> objects = [];
       try {
         final list = await DbService.instance.all();
         saved = {for (final p in list) p.id: p};
+        parcels = await DbService.instance.parcels();
+        depts = await DbService.instance.depts();
+        objects = await DbService.instance.objects();
       } catch (e) {
         dbError = e.toString();
       }
@@ -158,6 +197,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       setState(() {
         _settings = settings;
         _saved = saved;
+        _depts = depts;
+        _setParcels(parcels);
+        _objects = objects;
         _dbError = dbError;
         _client = client;
         _provider = NetworkTileProvider(httpClient: client);
@@ -362,8 +404,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       } else {
         _cad = res.points;
         _loadedBounds = LatLngBounds(LatLng(south, west), LatLng(north, east));
-        _pointsMessage =
-            res.truncated ? 'Sehr viele Punkte: bitte näher heranzoomen' : null;
+        _pointsMessage = null;
         _pointsDiag = '${res.points.length} Grenzpunkte geladen '
             '(${res.pages} Seite(n)'
             '${res.matched != null ? ', laut Dienst ${res.matched} im Ausschnitt' : ''})';
@@ -457,8 +498,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return math.sqrt(dx * dx + dy * dy);
   }
 
-  /// Antippen der Karte: der naechste Punkt in ca. 26 Bildpunkten Umkreis
-  /// wird geoeffnet. So lassen sich auch dicht liegende Punkte treffen.
+  /// Antippen der Karte: der naechste Punkt bzw. das naechste Objekt in ca.
+  /// 26 Bildpunkten Umkreis wird geoeffnet. Sonst gilt: im Auswahlmodus wird
+  /// das Flurstueck geladen, sonst die angetippte eigene Parzelle gezeigt.
   void _onMapTap(LatLng tap) {
     final zoom = _map.camera.zoom;
     final metersPerPixel =
@@ -466,6 +508,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     double best = 26 * metersPerPixel;
     CadastralPoint? cad;
     MarkedPoint? own;
+    ForestObject? obj;
 
     if (_settings.pointsOn) {
       for (final c in _cad) {
@@ -474,6 +517,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           best = d;
           cad = c;
           own = null;
+          obj = null;
         }
       }
     }
@@ -484,12 +528,371 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         best = d;
         own = p;
         cad = null;
+        obj = null;
       }
+    }
+    for (final o in _objects) {
+      final d = _meters(tap, o.lat, o.lon);
+      if (d < best) {
+        best = d;
+        obj = o;
+        own = null;
+        cad = null;
+      }
+    }
+
+    if (obj != null) {
+      _openObjectSheet(obj);
+      return;
     }
     if (own != null) {
       _openPointSheet(own);
-    } else if (cad != null) {
+      return;
+    }
+    if (cad != null) {
       _onCadastralTap(cad);
+      return;
+    }
+
+    for (final v in _parcels) {
+      if (v.geometry.contains(tap)) {
+        _showParcelQuick(v.parcel);
+        return;
+      }
+    }
+    if (_pickMode) _pickParcelAt(tap);
+  }
+
+  // ------------------------------------------------------ Mein Wald
+
+  Color _deptColor(String? deptId) {
+    if (deptId == null) return const Color(0xFFFFA000);
+    final i = _depts.indexWhere((d) => d.id == deptId);
+    if (i < 0) return const Color(0xFFFFA000);
+    return _deptPalette[i % _deptPalette.length];
+  }
+
+  void _setParcels(List<Parcel> list) {
+    final views = <_ParcelView>[];
+    for (final p in list) {
+      final g = ParcelGeometry.fromJsonString(p.geometryJson);
+      if (g != null) views.add(_ParcelView(p, g));
+    }
+    _parcels = views;
+  }
+
+  Future<void> _reloadForest() async {
+    try {
+      final parcels = await DbService.instance.parcels();
+      final depts = await DbService.instance.depts();
+      final objects = await DbService.instance.objects();
+      if (!mounted) return;
+      setState(() {
+        _depts = depts;
+        _setParcels(parcels);
+        _objects = objects;
+      });
+    } catch (e) {
+      _snack('Daten konnten nicht geladen werden: $e');
+    }
+  }
+
+  String? _parcelIdAt(LatLng p) {
+    for (final v in _parcels) {
+      if (v.geometry.contains(p)) return v.parcel.id;
+    }
+    return null;
+  }
+
+  String? _parcelName(String? id) {
+    if (id == null) return null;
+    for (final v in _parcels) {
+      if (v.parcel.id == id) return v.parcel.name;
+    }
+    return null;
+  }
+
+  void _fitPoints(List<LatLng> pts) {
+    if (pts.isEmpty) {
+      _snack('Noch keine Parzellen vorhanden.');
+      return;
+    }
+    if (!_mapReady) return;
+    setState(() => _follow = false);
+    _map.fitCamera(
+      CameraFit.bounds(
+        bounds: LatLngBounds.fromPoints(pts),
+        padding: const EdgeInsets.all(48),
+      ),
+    );
+  }
+
+  Future<void> _handleAction(String? r) async {
+    if (r == null) return;
+    final i = r.indexOf(':');
+    if (i < 0) return;
+    final kind = r.substring(0, i);
+    final id = r.substring(i + 1);
+    if (kind == 'parcel') {
+      for (final v in _parcels) {
+        if (v.parcel.id == id) {
+          _fitPoints(v.geometry.allPoints);
+          return;
+        }
+      }
+    } else if (kind == 'dept') {
+      _fitPoints([
+        for (final v in _parcels)
+          if (v.parcel.deptId == id) ...v.geometry.allPoints,
+      ]);
+    } else if (kind == 'object') {
+      for (final o in _objects) {
+        if (o.id == id) {
+          if (_mapReady) {
+            setState(() => _follow = false);
+            _map.move(LatLng(o.lat, o.lon), 19);
+          }
+          await _openObjectSheet(o);
+          return;
+        }
+      }
+    }
+  }
+
+  Future<void> _openForest() async {
+    final r = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => const ForestScreen()),
+    );
+    await _reloadForest();
+    await _handleAction(r);
+  }
+
+  Future<void> _openParcel(Parcel p) async {
+    final r = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => ParcelScreen(parcel: p)),
+    );
+    await _reloadForest();
+    await _handleAction(r);
+  }
+
+  void _showParcelQuick(Parcel p) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                p.name,
+                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text('Flurstück: ${p.label.isEmpty ? '–' : p.label}'),
+              Text('Fläche: ${formatArea(p.area)}'),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _openParcel(p);
+                },
+                icon: const Icon(Icons.description_outlined),
+                label: const Text('Steckbrief öffnen'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Auswahlmodus: Flurstueck an der angetippten Stelle laden und als
+  /// eigene Parzelle speichern.
+  Future<void> _pickParcelAt(LatLng at) async {
+    if (_pickBusy) return;
+    setState(() => _pickBusy = true);
+    final res = await FlurstueckService.at(at);
+    if (!mounted) return;
+    setState(() => _pickBusy = false);
+
+    final hit = res.hit;
+    if (hit == null) {
+      _snack(res.error ?? 'Kein Flurstück gefunden.');
+      return;
+    }
+
+    setState(() => _pending = hit);
+    final controller = TextEditingController(text: hit.label);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Parzelle speichern'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Flurstück: ${hit.label}\nFläche: ${formatArea(hit.area)}'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Name der Parzelle',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Abbrechen'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('Speichern'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    setState(() => _pending = null);
+    if (name == null || name.isEmpty) return;
+
+    try {
+      await DbService.instance.upsertParcel(
+        Parcel(
+          id: 'f:${hit.id}',
+          name: name,
+          label: hit.label,
+          area: hit.area,
+          geometryJson: hit.geometry.toJsonString(),
+          attrsJson: jsonEncode(hit.props),
+          updatedAt: DateTime.now(),
+        ),
+      );
+      await _reloadForest();
+      _snack('Parzelle "$name" gespeichert');
+    } catch (e) {
+      _snack('Speichern nicht möglich: $e');
+    }
+  }
+
+  // -------------------------------------------- Jagdeinrichtung, Habitatbaum
+
+  Future<void> _showCreateMenu(LatLng at, {double? accuracy}) async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.adjust),
+              title: const Text('Eigener Punkt'),
+              subtitle: const Text('Markierung mit Status und Notiz'),
+              onTap: () => Navigator.pop(ctx, 'point'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.cabin),
+              title: const Text('Jagdeinrichtung'),
+              subtitle: const Text('Leiter, Bock, Kanzel'),
+              onTap: () => Navigator.pop(ctx, 'jagd'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.park),
+              title: const Text('Habitatbaum'),
+              onTap: () => Navigator.pop(ctx, 'habitat'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == 'point') {
+      await _createOwnPoint(at);
+    } else if (choice == 'jagd' || choice == 'habitat') {
+      await _createObject(choice!, at, accuracy);
+    }
+  }
+
+  void _showCreateMenuHere() {
+    final p = _pos;
+    if (p == null) {
+      _snack(_locationMessage ?? 'Noch kein GPS-Signal.');
+      return;
+    }
+    _showCreateMenu(LatLng(p.latitude, p.longitude), accuracy: p.accuracy);
+  }
+
+  Future<void> _createObject(String kind, LatLng at, double? accuracy) async {
+    final o = ForestObject(
+      id: newId('o'),
+      kind: kind,
+      lat: at.latitude,
+      lon: at.longitude,
+      accuracy: accuracy,
+      parcelId: _parcelIdAt(at),
+      updatedAt: DateTime.now(),
+    );
+    await _openObjectSheet(o, isNew: true);
+  }
+
+  Future<void> _openObjectSheet(ForestObject o, {bool isNew = false}) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => ObjectSheet(
+        object: o,
+        isNew: isNew,
+        parcelName: _parcelName(o.parcelId),
+        onSave: _saveObject,
+        onDelete: () => _deleteObject(o),
+        onTarget: () => _setTargetRaw(
+          id: o.id,
+          name: o.title,
+          lat: o.lat,
+          lon: o.lon,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _saveObject(ForestObject o) async {
+    try {
+      final saved = o.parcelId == null
+          ? o.copyWith(parcelId: _parcelIdAt(LatLng(o.lat, o.lon)))
+          : o;
+      await DbService.instance.upsertObject(saved);
+      if (!mounted) return;
+      setState(() {
+        final i = _objects.indexWhere((x) => x.id == saved.id);
+        if (i >= 0) {
+          _objects[i] = saved;
+        } else {
+          _objects.insert(0, saved);
+        }
+        if (_targetId == saved.id) _targetName = saved.title;
+      });
+    } catch (e) {
+      _snack('Speichern nicht möglich: $e');
+    }
+  }
+
+  Future<void> _deleteObject(ForestObject o) async {
+    try {
+      await DbService.instance.deleteObject(o.id);
+      if (!mounted) return;
+      setState(() {
+        _objects.removeWhere((x) => x.id == o.id);
+        if (_targetId == o.id) _clearTarget();
+      });
+    } catch (e) {
+      _snack('Löschen nicht möglich: $e');
     }
   }
 
@@ -560,11 +963,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   // ------------------------------------------------- Ziel und Messung
 
-  Future<void> _setTarget(MarkedPoint p) async {
+  Future<void> _setTarget(MarkedPoint p) =>
+      _setTargetRaw(id: p.id, name: p.name, lat: p.lat, lon: p.lon);
+
+  Future<void> _setTargetRaw({
+    required String id,
+    required String name,
+    required double lat,
+    required double lon,
+  }) async {
     setState(() {
-      _targetId = p.id;
-      _targetName = p.name;
-      _targetPos = LatLng(p.lat, p.lon);
+      _targetId = id;
+      _targetName = name;
+      _targetPos = LatLng(lat, lon);
       _lastBand = null;
     });
     if (!_settings.hintSeen) {
@@ -706,6 +1117,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
     final id = _targetId;
     if (id == null) return;
+    if (!(id.startsWith('k:') || id.startsWith('e:'))) {
+      _snack('Für Waldobjekte wird die Messung nicht gespeichert.');
+      return;
+    }
     MarkedPoint? base = _saved[id];
     if (base == null) {
       // Katasterpunkt ohne bisherigen Eintrag: aus Ziel neu anlegen
@@ -908,10 +1323,66 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         onMapReady: _onMapReady,
         onPositionChanged: _onCameraChanged,
         onTap: (tapPosition, point) => _onMapTap(point),
-        onLongPress: (tapPosition, point) => _createOwnPoint(point),
+        onLongPress: (tapPosition, point) => _showCreateMenu(point),
       ),
       children: [
         ...layers,
+        PolygonLayer(
+          polygons: [
+            for (final v in _parcels)
+              for (final poly in v.geometry.polygons)
+                Polygon(
+                  points: poly.first,
+                  holePointsList: poly.length > 1 ? poly.sublist(1) : null,
+                  color: _deptColor(v.parcel.deptId).withAlpha(45),
+                  borderColor: _deptColor(v.parcel.deptId).withAlpha(235),
+                  borderStrokeWidth: 2.5,
+                ),
+            if (_pending != null)
+              for (final poly in _pending!.geometry.polygons)
+                Polygon(
+                  points: poly.first,
+                  holePointsList: poly.length > 1 ? poly.sublist(1) : null,
+                  color: const Color(0xFF00B8D4).withAlpha(70),
+                  borderColor: const Color(0xFF00B8D4),
+                  borderStrokeWidth: 4,
+                ),
+          ],
+        ),
+        ValueListenableBuilder<double>(
+          valueListenable: _dotZoom,
+          builder: (context, z, _) {
+            if (z < 13 || _parcels.isEmpty) return const SizedBox.shrink();
+            return MarkerLayer(
+              markers: [
+                for (final v in _parcels)
+                  Marker(
+                    point: v.centroid,
+                    width: 150,
+                    height: 28,
+                    child: IgnorePointer(
+                      child: Center(
+                        child: Text(
+                          v.parcel.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                            shadows: [
+                              Shadow(color: Colors.black, blurRadius: 4),
+                              Shadow(color: Colors.black, blurRadius: 2),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
         if (here != null && target != null)
           PolylineLayer(
             polylines: [
@@ -999,6 +1470,28 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             );
           },
         ),
+        if (_objects.isNotEmpty)
+          ValueListenableBuilder<double>(
+            valueListenable: _dotZoom,
+            builder: (context, z, _) {
+              final size = (14 + (z - 14) * 2.5).clamp(14.0, 30.0).toDouble();
+              return MarkerLayer(
+                markers: [
+                  for (final o in _objects)
+                    Marker(
+                      point: LatLng(o.lat, o.lon),
+                      width: size + 8,
+                      height: size + 8,
+                      child: ObjectMarker(
+                        isJagd: o.isJagd,
+                        isTarget: _targetId == o.id,
+                        size: size,
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
         if (here != null)
           ValueListenableBuilder<double?>(
             valueListenable: _heading.heading,
@@ -1131,6 +1624,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   const SizedBox(height: 6),
                   _chip(n, bg: Colors.white, fg: Colors.black87),
                 ],
+                if (_pickMode || _pickBusy) ...[
+                  const SizedBox(height: 6),
+                  _chip(
+                    _pickBusy
+                        ? 'Flurstück wird geladen …'
+                        : 'Parzellenauswahl: Tippe ein Flurstück an. '
+                            'Zum Beenden den Auswahl-Knopf erneut tippen.',
+                    bg: Colors.teal.shade50,
+                    fg: Colors.teal.shade900,
+                  ),
+                ],
                 if (missing.isNotEmpty) ...[
                   const SizedBox(height: 6),
                   _chip(
@@ -1177,10 +1681,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 ),
               ),
               const SizedBox(height: 12),
-              FloatingActionButton(
+              FloatingActionButton.small(
+                heroTag: 'pick',
+                tooltip: _pickMode ? 'Parzellenauswahl beenden' : 'Parzelle wählen',
+                backgroundColor: _pickMode ? primary : null,
+                onPressed: () => setState(() {
+                  _pickMode = !_pickMode;
+                  _pending = null;
+                }),
+                child: Icon(_pickMode ? Icons.check_box : Icons.crop_square),
+              ),
+              const SizedBox(height: 12),
+              FloatingActionButton.small(
                 heroTag: 'point',
-                tooltip: 'Punkt an meiner Position anlegen',
-                onPressed: _createOwnPointHere,
+                tooltip: 'Punkt anlegen (Eigener Punkt, Jagdeinrichtung, Habitatbaum)',
+                onPressed: _showCreateMenuHere,
                 child: const Icon(Icons.add_location_alt),
               ),
               const SizedBox(height: 12),
@@ -1425,6 +1940,24 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             },
           ),
           const Divider(),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.forest),
+            title: Text('Mein Wald (${_parcels.length} Parzellen)'),
+            onTap: () {
+              Navigator.of(ctx).pop();
+              _openForest();
+            },
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.zoom_out_map),
+            title: const Text('Alle Parzellen anzeigen'),
+            onTap: () {
+              Navigator.of(ctx).pop();
+              _fitPoints([for (final v in _parcels) ...v.geometry.allPoints]);
+            },
+          ),
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.place_outlined),
