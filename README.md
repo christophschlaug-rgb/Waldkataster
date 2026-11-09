@@ -2,7 +2,7 @@
 
 Android-App für den Wald in Rheinland-Pfalz: Flurkarte und Luftbild mit
 eigener GPS-Position, Grenzpunkte und Zielführung.
-(Meilenstein 1 und 2 der Anforderungen.)
+(Meilenstein 1 bis 3 der Anforderungen.)
 
 ## Funktionen in dieser Version
 
@@ -30,6 +30,25 @@ eigener GPS-Position, Grenzpunkte und Zielführung.
 - Luftbild und Flurkarte erscheinen erst ab der Zoomstufe, in der der Dienst
   Bilder liefert; darunter zeigt die Karte RP (kein weißes Bild mehr)
 - Alle Punkte liegen verschlüsselt auf dem Gerät
+
+### Neu in Version 1.2 (Meilenstein 3: Mein Wald)
+
+- Parzellen auswählen: Knopf "Parzelle wählen", dann das Flurstück auf der
+  Karte antippen und mit eigenem Namen speichern; alle Parzellen sind auf der
+  Karte farbig hervorgehoben und beschriftet (auch ohne Netz sichtbar)
+- Steckbrief je Parzelle: Bestandsaufnahme (Hauptbaumart, Mischbaumarten,
+  Alter, Bestandsstruktur, Zustand, Bemerkungen) und Kulturen
+- Abteilungen: fassen mehrere Parzellen zusammen, mit eigener
+  Bestandsaufnahme und eigenen Kulturen
+- Jagdeinrichtungen (Leiter, Drückjagdbock, Offene, Geschlossene und Mobile
+  Kanzel) mit Zustand, Prüfdatum, Kommentar und Fotos
+- Habitatbäume mit Baumart, selbst vergebener Nummer, Kommentar und Fotos
+- Übersicht "Mein Wald" mit Suche, Knopf "Alle Parzellen anzeigen"
+- Grenzpunkte: Punktgröße wächst mit dem Zoom (2 bis 20 Pixel), der Hinweis
+  "Sehr viele Punkte" entfällt
+
+Fotos liegen im geschützten Speicher der App (für andere Apps nicht lesbar),
+nicht zusätzlich verschlüsselt.
 
 ## Einrichtung (einmalig)
 
