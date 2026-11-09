@@ -23,11 +23,11 @@ String cardinal(double deg) {
   return names[i];
 }
 
-/// Durchmesser der Punktmarkierung je Zoomstufe: weit weg klein, nah dran
-/// groesser (Zoomstufe 16 = 6 px, ab Zoomstufe 21 = 20 px).
+/// Durchmesser der Punktmarkierung je Zoomstufe: weit weg ganz klein, nah dran
+/// groesser (Zoomstufe 16 = 2 px, ab Zoomstufe 21 = 20 px).
 double dotSizeForZoom(double zoom) {
-  final v = 6 + (zoom - 16) * 2.8;
-  if (v < 6) return 6;
+  final v = 2 + (zoom - 16) * 3.6;
+  if (v < 2) return 2;
   if (v > 20) return 20;
   return v;
 }
@@ -95,10 +95,12 @@ class CadastralMarker extends StatelessWidget {
           decoration: BoxDecoration(
             color: statusColor(status),
             shape: BoxShape.circle,
-            border: Border.all(
-              color: isTarget ? Colors.black : Colors.white,
-              width: isTarget ? 2.5 : (dot < 9 ? 1 : 1.5),
-            ),
+            border: (!isTarget && dot < 6)
+                ? null
+                : Border.all(
+                    color: isTarget ? Colors.black : Colors.white,
+                    width: isTarget ? 2.5 : (dot < 9 ? 1 : 1.5),
+                  ),
           ),
         ),
       ),
@@ -131,11 +133,52 @@ class OwnPointMarker extends StatelessWidget {
             height: size,
             decoration: BoxDecoration(
               color: statusColor(status),
-              border: Border.all(
-                color: isTarget ? Colors.black : Colors.white,
-                width: isTarget ? 2.5 : (dot < 9 ? 1 : 1.5),
-              ),
+              border: (!isTarget && dot < 6)
+                  ? null
+                  : Border.all(
+                      color: isTarget ? Colors.black : Colors.white,
+                      width: isTarget ? 2.5 : (dot < 9 ? 1 : 1.5),
+                    ),
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Jagdeinrichtung oder Habitatbaum auf der Karte.
+class ObjectMarker extends StatelessWidget {
+  final bool isJagd;
+  final bool isTarget;
+  final double size;
+
+  const ObjectMarker({
+    super.key,
+    required this.isJagd,
+    required this.isTarget,
+    required this.size,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Center(
+        child: Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            color: isJagd ? const Color(0xFF6A1B9A) : const Color(0xFF2E7D32),
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: isTarget ? Colors.black : Colors.white,
+              width: isTarget ? 3 : 2,
+            ),
+          ),
+          child: Icon(
+            isJagd ? Icons.cabin : Icons.park,
+            size: size * 0.62,
+            color: Colors.white,
           ),
         ),
       ),
