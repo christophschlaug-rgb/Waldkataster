@@ -28,14 +28,21 @@ class FlurstueckResult {
 }
 
 /// Flurstuecke aus dem Liegenschaftskataster (WFS RP ALKIS Vereinfacht,
-/// OGC-API-Features-Schnittstelle des Landesamts). Die Objektart wird beim
-/// ersten Aufruf aus der Liste der Datensaetze ermittelt.
+/// OGC-API-Features-Schnittstelle des Landesamts). Die Kennung des
+/// Datensatzes wird aus der Datensatzliste ermittelt; als Rueckfall dienen
+/// bekannte Schreibweisen.
 class FlurstueckService {
   static const String _base = 'https://www.geoportal.rlp.de/spatial-objects/519';
   static const Map<String, String> _headers = {
     'Accept': 'application/geo+json, application/json',
   };
+  static const List<String> _fallbackIds = [
+    'ave:Flurstueck',
+    'ave:Flurstück',
+    'Flurstueck',
+  ];
   static String? _collectionId;
+  static String _collectionsInfo = '';
 
   static String _norm(String s) => s
       .toLowerCase()
@@ -44,47 +51,77 @@ class FlurstueckService {
       .replaceAll('ä', 'ae')
       .replaceAll('ß', 'ss');
 
-  /// Bekannte Kennung des Datensatzes (laut Dienstbeschreibung "ave:Flurstueck").
-  static const String _defaultCollection = 'ave:Flurstueck';
+  static String _snippet(String body, {int max = 280}) {
+    final t = body.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return t.length > max ? '${t.substring(0, max)} …' : t;
+  }
 
-  static Future<String> _collection() async {
+  /// Kennung eines Eintrags der Datensatzliste: je nach Dienst unter
+  /// unterschiedlichen Namen oder nur im Verweis auf die Objekte.
+  static String? _idOf(Map c) {
+    for (final key in const [
+      'id',
+      'name',
+      'collectionId',
+      'collection_id',
+      'featuretype',
+      'featureType',
+      'typename',
+      'typeName',
+    ]) {
+      final v = c[key];
+      if (v != null && '$v'.trim().isNotEmpty) return '$v'.trim();
+    }
+    final links = c['links'];
+    if (links is List) {
+      for (final l in links) {
+        if (l is Map && l['href'] is String) {
+          final m = RegExp(r'collections/([^/?]+)').firstMatch(l['href'] as String);
+          if (m != null) return Uri.decodeComponent(m.group(1)!);
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Moegliche Kennungen des Flurstueck-Datensatzes, beste zuerst.
+  static Future<List<String>> _candidates() async {
+    final out = <String>[];
     final cached = _collectionId;
-    if (cached != null) return cached;
+    if (cached != null) out.add(cached);
     try {
       final resp = await http
           .get(Uri.parse('$_base/collections?f=json'), headers: _headers)
           .timeout(const Duration(seconds: 20));
+      final body = utf8.decode(resp.bodyBytes, allowMalformed: true);
+      _collectionsInfo = _snippet(body, max: 400);
       if (resp.statusCode == 200) {
-        final data = jsonDecode(utf8.decode(resp.bodyBytes, allowMalformed: true));
-        final list = data is Map ? data['collections'] : null;
+        final data = jsonDecode(body);
+        final list = data is Map ? data['collections'] : (data is List ? data : null);
         if (list is List) {
-          String? first;
+          final exact = <String>[];
+          final loose = <String>[];
           for (final c in list) {
-            if (c is Map) {
-              final id = '${c['id']}';
-              final text = _norm('$id ${c['title'] ?? ''}');
-              if (!text.contains('flurstueck')) continue;
-              first ??= id;
-              if (_norm(id).endsWith('flurstueck')) {
-                _collectionId = id;
-                return id;
-              }
+            if (c is! Map) continue;
+            final id = _idOf(c);
+            if (id == null) continue;
+            final text = _norm('$id ${c['title'] ?? ''}');
+            if (!text.contains('flurstueck')) continue;
+            if (_norm(id).endsWith('flurstueck')) {
+              exact.add(id);
+            } else {
+              loose.add(id);
             }
           }
-          if (first != null) {
-            _collectionId = first;
-            return first;
-          }
+          out.addAll(exact);
+          out.addAll(loose);
         }
       }
     } catch (_) {}
-    _collectionId = _defaultCollection;
-    return _defaultCollection;
-  }
-
-  static String _snippet(String body) {
-    final t = body.replaceAll(RegExp(r'\s+'), ' ').trim();
-    return t.length > 280 ? '${t.substring(0, 280)} …' : t;
+    for (final id in _fallbackIds) {
+      if (!out.contains(id)) out.add(id);
+    }
+    return out;
   }
 
   static String? _find(Map<String, dynamic> props, List<String> keys) {
@@ -125,7 +162,6 @@ class FlurstueckService {
   /// Flurstueck an einer Stelle der Karte (Punkt-in-Flaeche).
   static Future<FlurstueckResult> at(LatLng p) async {
     try {
-      final id = await _collection();
       const d = 0.00004; // ca. 4 m
       final bbox = [
         p.longitude - d,
@@ -133,19 +169,19 @@ class FlurstueckService {
         p.longitude + d,
         p.latitude + d,
       ].map((v) => v.toStringAsFixed(7)).join(',');
-      final items = '$_base/collections/$id/items';
-      const crs = 'http://www.opengis.net/def/crs/OGC/1.3/CRS84';
-      final urls = [
-        '$items?f=json&limit=50&bbox=$bbox',
-        '$items?f=json&limit=50&bbox=$bbox&bbox-crs=$crs&crs=$crs',
-      ];
 
+      final tried = <String>[];
       var problem = '';
-      for (final url in urls) {
+
+      for (final id in await _candidates()) {
+        tried.add(id);
+        final url = '$_base/collections/${Uri.encodeComponent(id)}/items'
+            '?f=json&limit=50&bbox=$bbox';
         final resp = await http
             .get(Uri.parse(url), headers: _headers)
             .timeout(const Duration(seconds: 25));
         final body = utf8.decode(resp.bodyBytes, allowMalformed: true);
+
         if (resp.statusCode != 200) {
           problem = 'HTTP ${resp.statusCode}: ${_snippet(body)}';
           continue;
@@ -159,13 +195,17 @@ class FlurstueckService {
         }
         final feats = data is Map ? data['features'] : null;
         if (feats is! List) {
+          // z. B. "Datensatz nicht vorhanden": naechste Schreibweise probieren
           problem = 'Unerwartete Antwort: ${_snippet(body)}';
           continue;
         }
+        _collectionId = id;
         if (feats.isEmpty) {
-          problem = 'An dieser Stelle wurde kein Flurstück gefunden.';
-          continue;
+          return const FlurstueckResult(
+            error: 'An dieser Stelle wurde kein Flurstück gefunden.',
+          );
         }
+
         var parsed = 0;
         for (final f in feats) {
           if (f is! Map) continue;
@@ -189,11 +229,17 @@ class FlurstueckService {
             ),
           );
         }
-        problem = parsed == 0
-            ? 'Flurstücke ohne lesbare Fläche: ${_snippet(body)}'
-            : 'Die angetippte Stelle liegt in keinem der gelieferten Flurstücke.';
+        return FlurstueckResult(
+          error: parsed == 0
+              ? 'Flurstücke ohne lesbare Fläche: ${_snippet(body)}'
+              : 'Die angetippte Stelle liegt in keinem der gelieferten Flurstücke.',
+        );
       }
-      return FlurstueckResult(error: '$problem\n\nAbfrage: ${urls.first}');
+
+      return FlurstueckResult(
+        error: '$problem\n\nGeprüfte Datensatz-Kennungen: ${tried.join(', ')}'
+            '\n\nDatensatzliste des Dienstes: $_collectionsInfo',
+      );
     } catch (e) {
       return FlurstueckResult(error: e.toString());
     }
