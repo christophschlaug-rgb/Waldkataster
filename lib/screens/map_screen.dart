@@ -720,7 +720,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
     final hit = res.hit;
     if (hit == null) {
-      _snack(res.error ?? 'Kein Flurstück gefunden.');
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Flurstück nicht geladen'),
+          content: SingleChildScrollView(
+            child: SelectableText(res.error ?? 'Kein Flurstück gefunden.'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Schließen'),
+            ),
+          ],
+        ),
+      );
       return;
     }
 
