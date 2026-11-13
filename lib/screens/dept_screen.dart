@@ -189,6 +189,13 @@ class _DeptScreenState extends State<DeptScreen> {
                   icon: const Icon(Icons.map_outlined),
                   label: const Text('Auf der Karte zeigen'),
                 ),
+                const SizedBox(height: 16),
+                OutlinedButton.icon(
+                  onPressed: _delete,
+                  style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Abteilung löschen'),
+                ),
               ],
             ),
     );

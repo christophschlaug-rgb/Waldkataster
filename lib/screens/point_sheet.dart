@@ -66,8 +66,13 @@ class _PointSheetState extends State<PointSheet> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Punkt löschen?'),
-        content: const Text('Der Punkt wird von diesem Handy gelöscht.'),
+        title: Text(widget.point.isOwn ? 'Punkt löschen?' : 'Eintrag zurücksetzen?'),
+        content: Text(
+          widget.point.isOwn
+              ? 'Der Punkt wird von diesem Handy gelöscht.'
+              : 'Status, Notiz und Messung dieses Grenzpunkts werden gelöscht. '
+                  'Der Katasterpunkt selbst bleibt erhalten.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
@@ -191,7 +196,7 @@ class _PointSheetState extends State<PointSheet> {
                 child: TextButton.icon(
                   onPressed: _delete,
                   icon: const Icon(Icons.delete_outline),
-                  label: const Text('Punkt löschen'),
+                  label: Text(widget.point.isOwn ? 'Punkt löschen' : 'Eintrag zurücksetzen'),
                 ),
               ),
           ],

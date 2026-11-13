@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/forest_models.dart';
 import '../services/db_service.dart';
 import '../services/geo_utils.dart';
+import '../services/photo_service.dart';
 import '../widgets/stand_editor.dart';
 import 'dept_screen.dart';
 import 'parcel_screen.dart';
@@ -105,6 +106,65 @@ class _ForestScreenState extends State<ForestScreen> {
     return '';
   }
 
+  Future<bool> _confirm(String title, String content, String yes) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(content),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Abbrechen'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(yes),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
+  Future<void> _deleteParcel(Parcel p) async {
+    final ok = await _confirm(
+      'Parzelle "${p.name}" entfernen?',
+      'Die Parzelle samt Bestandsaufnahme und Kulturen wird gelöscht. '
+          'Jagdeinrichtungen und Habitatbäume bleiben erhalten.',
+      'Entfernen',
+    );
+    if (!ok) return;
+    await DbService.instance.deleteParcel(p.id);
+    await _load();
+  }
+
+  Future<void> _deleteDept(Dept d) async {
+    final ok = await _confirm(
+      'Abteilung "${d.name}" löschen?',
+      'Die Parzellen bleiben erhalten, werden aber keiner Abteilung mehr '
+          'zugeordnet. Bestandsaufnahme und Kulturen der Abteilung werden gelöscht.',
+      'Löschen',
+    );
+    if (!ok) return;
+    await DbService.instance.deleteDept(d.id);
+    await _load();
+  }
+
+  Future<void> _deleteObject(ForestObject o) async {
+    final ok = await _confirm(
+      '${o.title} löschen?',
+      'Der Eintrag samt Fotos wird von diesem Handy gelöscht.',
+      'Löschen',
+    );
+    if (!ok) return;
+    for (final path in o.photos) {
+      await PhotoService.deleteFile(path);
+    }
+    await DbService.instance.deleteObject(o.id);
+    await _load();
+  }
+
   @override
   Widget build(BuildContext context) {
     final q = _query.toLowerCase();
@@ -166,6 +226,11 @@ class _ForestScreenState extends State<ForestScreen> {
                               '${dept.isNotEmpty ? ' · $dept' : ''}',
                             ),
                             onTap: () => _open(ParcelScreen(parcel: p)),
+                            trailing: IconButton(
+                              tooltip: 'Parzelle entfernen',
+                              icon: const Icon(Icons.delete_outline),
+                              onPressed: () => _deleteParcel(p),
+                            ),
                           );
                         },
                       ),
@@ -203,6 +268,11 @@ class _ForestScreenState extends State<ForestScreen> {
                     title: Text(d.name),
                     subtitle: Text('${members.length} Parzellen · ${formatArea(area)}'),
                     onTap: () => _open(DeptScreen(dept: d)),
+                    trailing: IconButton(
+                      tooltip: 'Abteilung löschen',
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () => _deleteDept(d),
+                    ),
                   );
                 }),
             ],
@@ -235,6 +305,11 @@ class _ForestScreenState extends State<ForestScreen> {
                         '${o.checkedOn != null ? ' · geprüft ${formatDate(o.checkedOn!).substring(0, 10)}' : ''}',
                       ),
                       onTap: () => Navigator.of(context).pop('object:${o.id}'),
+                      trailing: IconButton(
+                        tooltip: 'Eintrag löschen',
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: () => _deleteObject(o),
+                      ),
                     );
                   },
                 ),

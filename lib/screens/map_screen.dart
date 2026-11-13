@@ -113,6 +113,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _pickMode = false;
   bool _pickBusy = false;
   FlurstueckHit? _pending;
+  String? _repickId;
 
   static const List<Color> _deptPalette = [
     Color(0xFF8E24AA),
@@ -468,7 +469,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             _setTarget(p);
           }
         },
-        onDelete: p.isOwn ? () => _deletePoint(p) : null,
+        onDelete: (p.isOwn || _saved.containsKey(p.id))
+            ? () => _deletePoint(p)
+            : null,
       ),
     );
   }
@@ -554,6 +557,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       return;
     }
 
+    if (_repickId != null) {
+      _pickParcelAt(tap);
+      return;
+    }
     for (final v in _parcels) {
       if (v.geometry.contains(tap)) {
         _showParcelQuick(v.parcel);
@@ -645,6 +652,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         for (final v in _parcels)
           if (v.parcel.deptId == id) ...v.geometry.allPoints,
       ]);
+    } else if (kind == 'repick') {
+      setState(() {
+        _repickId = id;
+        _pickMode = true;
+      });
+      _snack('Tippe jetzt das neue Flurstück auf der Karte an.');
     } else if (kind == 'object') {
       for (final o in _objects) {
         if (o.id == id) {
@@ -710,7 +723,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   /// Auswahlmodus: Flurstueck an der angetippten Stelle laden und als
-  /// eigene Parzelle speichern.
+  /// eigene Parzelle speichern (oder einer vorhandenen Parzelle neu zuordnen).
   Future<void> _pickParcelAt(LatLng at) async {
     if (_pickBusy) return;
     setState(() => _pickBusy = true);
@@ -738,27 +751,58 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       return;
     }
 
+    Parcel? target;
+    final repickId = _repickId;
+    if (repickId != null) {
+      for (final v in _parcels) {
+        if (v.parcel.id == repickId) target = v.parcel;
+      }
+    }
+
     setState(() => _pending = hit);
     final controller = TextEditingController(text: hit.label);
-    final name = await showDialog<String>(
+    final answer = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Parzelle speichern'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Flurstück: ${hit.label}\nFläche: ${formatArea(hit.area)}'),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              decoration: const InputDecoration(
-                labelText: 'Name der Parzelle',
-                border: OutlineInputBorder(),
+        title: Text(target == null ? 'Parzelle speichern' : 'Flurstück neu zuordnen'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Flurstück: ${hit.label}\nFläche: ${formatArea(hit.area)}'),
+              const SizedBox(height: 12),
+              if (target == null)
+                TextField(
+                  controller: controller,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Name der Parzelle',
+                    border: OutlineInputBorder(),
+                  ),
+                )
+              else
+                Text('Das gewählte Flurstück ersetzt die Fläche der Parzelle '
+                    '"${target.name}".'),
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                title: const Text('Angaben des Dienstes'),
+                children: [
+                  for (final e in hit.props.entries)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Text(
+                          '${e.key}: ${e.value}',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ),
+                ],
               ),
-            ),
-          ],
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -767,29 +811,51 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: const Text('Speichern'),
+            child: Text(target == null ? 'Speichern' : 'Zuordnen'),
           ),
         ],
       ),
     );
     if (!mounted) return;
     setState(() => _pending = null);
-    if (name == null || name.isEmpty) return;
+    if (answer == null) return;
 
     try {
-      await DbService.instance.upsertParcel(
-        Parcel(
-          id: 'f:${hit.id}',
-          name: name,
-          label: hit.label,
-          area: hit.area,
-          geometryJson: hit.geometry.toJsonString(),
-          attrsJson: jsonEncode(hit.props),
-          updatedAt: DateTime.now(),
-        ),
-      );
-      await _reloadForest();
-      _snack('Parzelle "$name" gespeichert');
+      if (target != null) {
+        await DbService.instance.upsertParcel(
+          Parcel(
+            id: target.id,
+            name: target.name,
+            label: hit.label,
+            area: hit.area,
+            geometryJson: hit.geometry.toJsonString(),
+            attrsJson: jsonEncode(hit.props),
+            deptId: target.deptId,
+            updatedAt: DateTime.now(),
+          ),
+        );
+        setState(() {
+          _repickId = null;
+          _pickMode = false;
+        });
+        await _reloadForest();
+        _snack('Flurstück neu zugeordnet');
+      } else {
+        if (answer.isEmpty) return;
+        await DbService.instance.upsertParcel(
+          Parcel(
+            id: 'f:${hit.id}',
+            name: answer,
+            label: hit.label,
+            area: hit.area,
+            geometryJson: hit.geometry.toJsonString(),
+            attrsJson: jsonEncode(hit.props),
+            updatedAt: DateTime.now(),
+          ),
+        );
+        await _reloadForest();
+        _snack('Parzelle "$answer" gespeichert');
+      }
     } catch (e) {
       _snack('Speichern nicht möglich: $e');
     }
@@ -962,7 +1028,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _openPoints() async {
     final id = await Navigator.of(context).push<String>(
       MaterialPageRoute(
-        builder: (_) => PointsScreen(points: _saved.values.toList()),
+        builder: (_) => PointsScreen(
+          points: _saved.values.toList(),
+          onDelete: _deletePoint,
+        ),
       ),
     );
     if (id == null) return;
@@ -1366,7 +1435,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ValueListenableBuilder<double>(
           valueListenable: _dotZoom,
           builder: (context, z, _) {
-            if (z < 13 || _parcels.isEmpty) return const SizedBox.shrink();
+            if (z < 13 || _parcels.isEmpty || !_settings.parcelLabels) {
+              return const SizedBox.shrink();
+            }
             return MarkerLayer(
               markers: [
                 for (final v in _parcels)
@@ -1643,8 +1714,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   _chip(
                     _pickBusy
                         ? 'Flurstück wird geladen …'
-                        : 'Parzellenauswahl: Tippe ein Flurstück an. '
-                            'Zum Beenden den Auswahl-Knopf erneut tippen.',
+                        : (_repickId != null
+                            ? 'Tippe das neue Flurstück an, das zu dieser '
+                                'Parzelle gehören soll. Zum Abbrechen den '
+                                'Auswahl-Knopf erneut tippen.'
+                            : 'Parzellenauswahl: Tippe ein Flurstück an. '
+                                'Zum Beenden den Auswahl-Knopf erneut tippen.'),
                     bg: Colors.teal.shade50,
                     fg: Colors.teal.shade900,
                   ),
@@ -1702,6 +1777,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 onPressed: () => setState(() {
                   _pickMode = !_pickMode;
                   _pending = null;
+                  if (!_pickMode) _repickId = null;
                 }),
                 child: Icon(_pickMode ? Icons.check_box : Icons.crop_square),
               ),
@@ -1935,6 +2011,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               });
               if (v && _mapReady) _scheduleLoadPoints(_map.camera);
             },
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Parzellennamen auf der Karte'),
+            subtitle: const Text('Ab Zoomstufe 13'),
+            value: s.parcelLabels,
+            onChanged: (v) => _change(setSheet, () => _settings.parcelLabels = v),
           ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,

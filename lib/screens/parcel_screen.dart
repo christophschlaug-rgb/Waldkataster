@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../models/forest_models.dart';
@@ -18,6 +20,7 @@ class ParcelScreen extends StatefulWidget {
 class _ParcelScreenState extends State<ParcelScreen> {
   late Parcel _parcel;
   late final TextEditingController _name;
+  late final TextEditingController _label;
   List<Dept> _depts = [];
   List<ForestObject> _objects = [];
   bool _loaded = false;
@@ -28,12 +31,14 @@ class _ParcelScreenState extends State<ParcelScreen> {
     super.initState();
     _parcel = widget.parcel;
     _name = TextEditingController(text: _parcel.name);
+    _label = TextEditingController(text: _parcel.label);
     _load();
   }
 
   @override
   void dispose() {
     _name.dispose();
+    _label.dispose();
     super.dispose();
   }
 
@@ -56,6 +61,16 @@ class _ParcelScreenState extends State<ParcelScreen> {
     }
   }
 
+  Map<String, dynamic>? get _attrs {
+    final s = _parcel.attrsJson;
+    if (s == null) return null;
+    try {
+      return (jsonDecode(s) as Map).cast<String, dynamic>();
+    } catch (_) {
+      return null;
+    }
+  }
+
   String get _deptName {
     for (final d in _depts) {
       if (d.id == _parcel.deptId) return d.name;
@@ -67,8 +82,9 @@ class _ParcelScreenState extends State<ParcelScreen> {
     final name = _name.text.trim();
     if (name.isEmpty) return;
     try {
-      await DbService.instance.upsertParcel(_parcel.copyWith(name: name));
-      setState(() => _parcel = _parcel.copyWith(name: name));
+      final updated = _parcel.copyWith(name: name, label: _label.text.trim());
+      await DbService.instance.upsertParcel(updated);
+      setState(() => _parcel = updated);
       if (!mounted) return;
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Gespeichert')));
@@ -145,9 +161,36 @@ class _ParcelScreenState extends State<ParcelScreen> {
                   ),
                   onSubmitted: (_) => _saveBasics(),
                 ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _label,
+                  decoration: const InputDecoration(
+                    labelText: 'Flur und Flurstück',
+                    helperText: 'Kann hier jederzeit von Hand korrigiert werden',
+                    border: OutlineInputBorder(),
+                  ),
+                  onSubmitted: (_) => _saveBasics(),
+                ),
                 const SizedBox(height: 8),
-                Text('Flurstück: ${_parcel.label.isEmpty ? '–' : _parcel.label}'),
                 Text('Fläche: ${formatArea(_parcel.area)}'),
+                if (_attrs != null && _attrs!.isNotEmpty)
+                  ExpansionTile(
+                    tilePadding: EdgeInsets.zero,
+                    title: const Text('Angaben aus dem Kataster'),
+                    children: [
+                      for (final e in _attrs!.entries)
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: SelectableText(
+                              '${e.key}: ${e.value}',
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
                 const SizedBox(height: 12),
                 LabeledDropdown(
                   label: 'Abteilung',
@@ -160,7 +203,7 @@ class _ParcelScreenState extends State<ParcelScreen> {
                   alignment: Alignment.centerRight,
                   child: FilledButton.tonal(
                     onPressed: _saveBasics,
-                    child: const Text('Namen speichern'),
+                    child: const Text('Speichern'),
                   ),
                 ),
                 const Divider(height: 32),
@@ -203,6 +246,27 @@ class _ParcelScreenState extends State<ParcelScreen> {
                   onPressed: () => Navigator.of(context).pop('parcel:$id'),
                   icon: const Icon(Icons.map_outlined),
                   label: const Text('Auf der Karte zeigen'),
+                ),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.of(context).pop('repick:$id'),
+                  icon: const Icon(Icons.edit_location_alt_outlined),
+                  label: const Text('Flurstück neu wählen'),
+                ),
+                const Padding(
+                  padding: EdgeInsets.only(top: 4),
+                  child: Text(
+                    'Für den Fall, dass sich das Flurstück geändert hat. '
+                    'Bestandsaufnahme, Kulturen und Abteilung bleiben erhalten.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                OutlinedButton.icon(
+                  onPressed: _delete,
+                  style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('Parzelle entfernen'),
                 ),
               ],
             ),
