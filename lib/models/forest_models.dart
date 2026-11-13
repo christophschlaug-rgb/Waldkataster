@@ -63,11 +63,16 @@ class Parcel {
     required this.updatedAt,
   });
 
-  Parcel copyWith({String? name, String? deptId, bool clearDept = false}) {
+  Parcel copyWith({
+    String? name,
+    String? label,
+    String? deptId,
+    bool clearDept = false,
+  }) {
     return Parcel(
       id: id,
       name: name ?? this.name,
-      label: label,
+      label: label ?? this.label,
       area: area,
       geometryJson: geometryJson,
       attrsJson: attrsJson,
