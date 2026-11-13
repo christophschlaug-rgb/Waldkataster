@@ -124,37 +124,85 @@ class FlurstueckService {
     return out;
   }
 
-  static String? _find(Map<String, dynamic> props, List<String> keys) {
-    for (final key in keys) {
-      for (final e in props.entries) {
-        if (_norm(e.key).contains(key) &&
-            e.value != null &&
-            '${e.value}'.trim().isNotEmpty) {
-          return '${e.value}'.trim();
-        }
+  /// Verschachtelte Angaben flach machen ("a.b").
+  static Map<String, dynamic> _flatten(Map<String, dynamic> props, [String prefix = '']) {
+    final out = <String, dynamic>{};
+    props.forEach((k, v) {
+      final key = prefix.isEmpty ? k : '$prefix.$k';
+      if (v is Map) {
+        out.addAll(_flatten(Map<String, dynamic>.from(v), key));
+      } else if (v is List) {
+        out[key] = v.map((e) => e is Map ? jsonEncode(e) : '$e').join(', ');
+      } else {
+        out[key] = v;
+      }
+    });
+    return out;
+  }
+
+  /// Erster passender Wert: Schluessel enthaelt eines der Muster in
+  /// [include] und keines aus [exclude] (Gross-/Kleinschreibung egal).
+  static String? _find(
+    Map<String, dynamic> flat,
+    List<String> include, {
+    List<String> exclude = const [],
+  }) {
+    for (final pattern in include) {
+      for (final e in flat.entries) {
+        final key = _norm(e.key);
+        if (!key.contains(pattern)) continue;
+        if (exclude.any((x) => key.contains(x))) continue;
+        final v = e.value;
+        if (v == null || '$v'.trim().isEmpty) continue;
+        return '$v'.trim();
       }
     }
     return null;
   }
 
+  /// "Gemarkung, Flur, Flurstueck" aus den Angaben des Dienstes. Gelingt
+  /// das nicht, bleibt die technische Kennung.
   static String _label(Map<String, dynamic> props, String id) {
-    final kz = _find(props, ['kennzeichen']);
-    if (kz != null) return kz;
+    final p = _flatten(props);
+    final gem = _find(
+      p,
+      ['gemarkungsname', 'gemarkungname', 'gemarkungtext', 'gemarkung'],
+      exclude: ['nummer', 'schluessel', 'nr', 'land', 'id'],
+    );
+    final flur = _find(
+      p,
+      ['flurnummer', 'flurnr', 'flur'],
+      exclude: ['flurstueck', 'flst', 'kennz'],
+    );
+    final zaehler = _find(p, ['zaehler', 'flstnrzae', 'flurstuecksnummerzae']);
+    final nenner = _find(p, ['nenner', 'flstnrnen']);
+    final nummer = _find(
+      p,
+      ['flurstuecksnummer', 'flurstnr', 'flstnr', 'flurstueckstext'],
+      exclude: ['kennz'],
+    );
+    String? fst;
+    if (zaehler != null) {
+      fst = (nenner != null && nenner != '0' && nenner.isNotEmpty)
+          ? '$zaehler/$nenner'
+          : zaehler;
+    } else if (nummer != null) {
+      fst = nummer;
+    }
+
     final parts = <String>[];
-    final gem = _find(props, ['gemarkung']);
-    final flur = _find(props, ['flurnummer', 'flur']);
-    final zaehler = _find(props, ['zaehler']);
-    final nenner = _find(props, ['nenner']);
     if (gem != null) parts.add(gem);
     if (flur != null) parts.add('Flur $flur');
-    if (zaehler != null) {
-      parts.add('Flurstück $zaehler${nenner != null ? '/$nenner' : ''}');
-    }
-    return parts.isEmpty ? id : parts.join(', ');
+    if (fst != null) parts.add('Flurstück $fst');
+    if (parts.isNotEmpty) return parts.join(', ');
+
+    final kz = _find(p, ['flurstueckskennzeichen', 'kennzeichen', 'kennz']);
+    if (kz != null) return kz;
+    return id;
   }
 
   static double? _area(Map<String, dynamic> props) {
-    final v = _find(props, ['flaeche']);
+    final v = _find(_flatten(props), ['amtlicheflaeche', 'flaeche']);
     if (v == null) return null;
     return double.tryParse(v.replaceAll(',', '.'));
   }

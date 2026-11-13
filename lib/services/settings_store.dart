@@ -11,6 +11,7 @@ class MapSettings {
   bool headingUp;
   bool keepAwake;
   bool pointsOn;
+  bool parcelLabels;
   bool hintSeen;
 
   /// Gewaehlte Ebenen der Flurkarte; null = Standardauswahl der App.
@@ -24,6 +25,7 @@ class MapSettings {
     this.headingUp = false,
     this.keepAwake = false,
     this.pointsOn = true,
+    this.parcelLabels = false,
     this.hintSeen = false,
     this.flurLayers,
   });
@@ -38,6 +40,7 @@ class MapSettings {
       headingUp: p.getBool('headingUp') ?? false,
       keepAwake: p.getBool('keepAwake') ?? false,
       pointsOn: p.getBool('pointsOn') ?? true,
+      parcelLabels: p.getBool('parcelLabels') ?? false,
       hintSeen: p.getBool('hintSeen') ?? false,
       flurLayers: p.getStringList('flurLayers'),
     );
@@ -52,6 +55,7 @@ class MapSettings {
     await p.setBool('headingUp', headingUp);
     await p.setBool('keepAwake', keepAwake);
     await p.setBool('pointsOn', pointsOn);
+    await p.setBool('parcelLabels', parcelLabels);
     await p.setBool('hintSeen', hintSeen);
     final layers = flurLayers;
     if (layers == null) {
