@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/forest_models.dart';
 import '../services/db_service.dart';
+import '../services/flurstueck_service.dart';
 import '../services/geo_utils.dart';
 import '../widgets/stand_editor.dart';
 
@@ -171,7 +172,19 @@ class _ParcelScreenState extends State<ParcelScreen> {
                   ),
                   onSubmitted: (_) => _saveBasics(),
                 ),
-                const SizedBox(height: 8),
+                if (_attrs != null && _attrs!.isNotEmpty)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: () => setState(() {
+                        _label.text =
+                            FlurstueckService.buildLabel(_attrs!, _parcel.id);
+                      }),
+                      icon: const Icon(Icons.auto_fix_high, size: 18),
+                      label: const Text('Aus Katasterangaben neu bilden'),
+                    ),
+                  ),
+                const SizedBox(height: 4),
                 Text('Fläche: ${formatArea(_parcel.area)}'),
                 if (_attrs != null && _attrs!.isNotEmpty)
                   ExpansionTile(

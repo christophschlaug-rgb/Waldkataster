@@ -770,7 +770,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Flurstück: ${hit.label}\nFläche: ${formatArea(hit.area)}'),
+              Text(
+                'Flurstück: ${hit.label}\nFläche: ${formatArea(hit.area)}'
+                '${hit.lage != null ? '\nLage: ${hit.lage}' : ''}'
+                '${hit.nutzung != null ? '\nNutzung laut Kataster: ${hit.nutzung}' : ''}',
+              ),
               const SizedBox(height: 12),
               if (target == null)
                 TextField(
@@ -834,6 +838,24 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             updatedAt: DateTime.now(),
           ),
         );
+        // Fehlt noch eine Bestandsaufnahme, Nutzung und Lage daraus uebernehmen
+        final notes = <String>[
+          if (hit.nutzung != null) 'Nutzung laut Kataster: ${hit.nutzung}',
+          if (hit.lage != null) 'Lage: ${hit.lage}',
+        ];
+        if (notes.isNotEmpty) {
+          final ownerId = 'p:${target.id}';
+          final existing = await DbService.instance.stand(ownerId);
+          if (existing == null) {
+            await DbService.instance.upsertStand(
+              Stand(
+                ownerId: ownerId,
+                bemerkungen: notes.join('\n'),
+                updatedAt: DateTime.now(),
+              ),
+            );
+          }
+        }
         setState(() {
           _repickId = null;
           _pickMode = false;
@@ -853,6 +875,24 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             updatedAt: DateTime.now(),
           ),
         );
+        // Nutzung und Lage aus dem Kataster in die Bestandsaufnahme uebernehmen
+        final notes = <String>[
+          if (hit.nutzung != null) 'Nutzung laut Kataster: ${hit.nutzung}',
+          if (hit.lage != null) 'Lage: ${hit.lage}',
+        ];
+        if (notes.isNotEmpty) {
+          final ownerId = 'p:f:${hit.id}';
+          final existing = await DbService.instance.stand(ownerId);
+          if (existing == null) {
+            await DbService.instance.upsertStand(
+              Stand(
+                ownerId: ownerId,
+                bemerkungen: notes.join('\n'),
+                updatedAt: DateTime.now(),
+              ),
+            );
+          }
+        }
         await _reloadForest();
         _snack('Parzelle "$answer" gespeichert');
       }
