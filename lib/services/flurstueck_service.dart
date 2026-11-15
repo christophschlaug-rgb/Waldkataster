@@ -12,12 +12,20 @@ class FlurstueckHit {
   final String label;
   final double? area;
 
+  /// Tatsaechliche Nutzung laut Kataster, z. B. "Laubholz (663 m²)".
+  final String? nutzung;
+
+  /// Lagebezeichnung (Flurname), z. B. "In den Lachen".
+  final String? lage;
+
   const FlurstueckHit({
     required this.id,
     required this.geometry,
     required this.props,
     required this.label,
     required this.area,
+    this.nutzung,
+    this.lage,
   });
 }
 
@@ -160,26 +168,45 @@ class FlurstueckService {
     return null;
   }
 
+  /// Wert zu genau diesem Schluessel (ohne Teiltreffer wie "idflurst").
+  static String? _exact(Map<String, dynamic> flat, List<String> keys) {
+    for (final key in keys) {
+      for (final e in flat.entries) {
+        if (_norm(e.key) == key && e.value != null && '${e.value}'.trim().isNotEmpty) {
+          return '${e.value}'.trim();
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Oeffentlich, damit gespeicherte Katasterangaben erneut ausgewertet
+  /// werden koennen.
+  static String buildLabel(Map<String, dynamic> props, String id) =>
+      _label(props, id);
+
   /// "Gemarkung, Flur, Flurstueck" aus den Angaben des Dienstes. Gelingt
   /// das nicht, bleibt die technische Kennung.
   static String _label(Map<String, dynamic> props, String id) {
     final p = _flatten(props);
-    final gem = _find(
-      p,
-      ['gemarkungsname', 'gemarkungname', 'gemarkungtext', 'gemarkung'],
-      exclude: ['nummer', 'schluessel', 'nr', 'land', 'id'],
-    );
-    final flur = _find(
-      p,
-      ['flurnummer', 'flurnr', 'flur'],
-      exclude: ['flurstueck', 'flst', 'kennz'],
-    );
-    final zaehler = _find(p, ['zaehler', 'flstnrzae', 'flurstuecksnummerzae']);
-    final nenner = _find(p, ['nenner', 'flstnrnen']);
+    final gem = _exact(p, ['gemarkung', 'gemarkungsname']) ??
+        _find(
+          p,
+          ['gemarkungsname', 'gemarkungname', 'gemarkungtext'],
+          exclude: ['nummer', 'schluessel', 'nr', 'land', 'id'],
+        );
+
+    var flur = _exact(p, ['flur', 'flurnummer', 'flurnr']);
+    if (flur != null && !_norm(flur).startsWith('flur')) flur = 'Flur $flur';
+
+    final zaehler = _exact(p, ['flstnrzae', 'zaehler']) ??
+        _find(p, ['zaehler', 'flurstuecksnummerzae']);
+    final nenner = _exact(p, ['flstnrnen', 'nenner']) ??
+        _find(p, ['nenner', 'flurstuecksnummernen']);
     final nummer = _find(
       p,
       ['flurstuecksnummer', 'flurstnr', 'flstnr', 'flurstueckstext'],
-      exclude: ['kennz'],
+      exclude: ['kennz', 'zae', 'nen'],
     );
     String? fst;
     if (zaehler != null) {
@@ -192,14 +219,31 @@ class FlurstueckService {
 
     final parts = <String>[];
     if (gem != null) parts.add(gem);
-    if (flur != null) parts.add('Flur $flur');
+    if (flur != null) parts.add(flur);
     if (fst != null) parts.add('Flurstück $fst');
     if (parts.isNotEmpty) return parts.join(', ');
 
-    final kz = _find(p, ['flurstueckskennzeichen', 'kennzeichen', 'kennz']);
+    final kz = _find(p, ['flstkennz', 'flurstueckskennzeichen', 'kennzeichen', 'kennz']);
     if (kz != null) return kz;
     return id;
   }
+
+  /// Tatsaechliche Nutzung (Feld "tntxt", z. B. "Laubholz;663") lesbar machen.
+  static String? _nutzung(Map<String, dynamic> props) {
+    final raw = _find(_flatten(props), ['tntxt']);
+    if (raw == null) return null;
+    final pairs = RegExp(r'([^;|,\n]+);\s*(\d+(?:[.,]\d+)?)').allMatches(raw);
+    final out = <String>[];
+    for (final m in pairs) {
+      final art = m.group(1)!.trim();
+      final flaeche = m.group(2)!.replaceAll('.', ',');
+      if (art.isNotEmpty) out.add('$art ($flaeche m²)');
+    }
+    return out.isEmpty ? raw : out.join(', ');
+  }
+
+  static String? _lage(Map<String, dynamic> props) =>
+      _find(_flatten(props), ['lagebeztxt', 'lagebezeichnung']);
 
   static double? _area(Map<String, dynamic> props) {
     final v = _find(_flatten(props), ['amtlicheflaeche', 'flaeche']);
@@ -274,6 +318,8 @@ class FlurstueckService {
               props: props,
               label: _label(props, fid),
               area: _area(props) ?? geom.areaM2(),
+              nutzung: _nutzung(props),
+              lage: _lage(props),
             ),
           );
         }
