@@ -348,3 +348,45 @@ class GuidancePanel extends StatelessWidget {
     );
   }
 }
+
+/// Kaefernest oder Sturmschaden auf der Karte.
+class DamageMarker extends StatelessWidget {
+  final bool isKaefer;
+  final bool done;
+  final bool isTarget;
+  final double size;
+
+  const DamageMarker({
+    super.key,
+    required this.isKaefer,
+    required this.done,
+    required this.isTarget,
+    required this.size,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final base = isKaefer ? const Color(0xFFC62828) : const Color(0xFFEF6C00);
+    return IgnorePointer(
+      child: Center(
+        child: Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            color: done ? const Color(0xFF78909C) : base,
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: isTarget ? Colors.black : Colors.white,
+              width: isTarget ? 3 : 2,
+            ),
+          ),
+          child: Icon(
+            isKaefer ? Icons.bug_report : Icons.storm,
+            size: size * 0.62,
+            color: Colors.white,
+          ),
+        ),
+      ),
+    );
+  }
+}
