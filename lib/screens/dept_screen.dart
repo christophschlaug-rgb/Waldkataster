@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/forest_models.dart';
 import '../services/db_service.dart';
 import '../services/geo_utils.dart';
+import '../widgets/measure_widgets.dart';
 import '../widgets/stand_editor.dart';
 
 /// Abteilung: fasst mehrere Parzellen zusammen und hat eigene Bestandsaufnahme
@@ -156,14 +157,13 @@ class _DeptScreenState extends State<DeptScreen> {
                       style: TextStyle(color: Colors.grey),
                     ),
                   ),
-                for (final p in _parcels)
+                for (final p in _parcels.where(
+                  (p) => p.deptId == null || p.deptId == _dept.id,
+                ))
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
                     title: Text(p.name),
-                    subtitle: Text(
-                      '${p.label} · ${formatArea(p.area)}'
-                      '${p.deptId != null && p.deptId != _dept.id ? ' · in anderer Abteilung' : ''}',
-                    ),
+                    subtitle: Text('${p.label} · ${formatArea(p.area)}'),
                     value: p.deptId == _dept.id,
                     onChanged: (v) => _toggle(p, v == true),
                   ),
@@ -181,6 +181,16 @@ class _DeptScreenState extends State<DeptScreen> {
                 ),
                 const SizedBox(height: 8),
                 KulturEditor(ownerId: 'd:${_dept.id}'),
+                const Divider(height: 32),
+                const Text(
+                  'Maßnahmen',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                MeasureEditor(
+                  ownerId: 'd:${_dept.id}',
+                  ownerLabel: 'Abteilung ${_dept.name}',
+                ),
                 const SizedBox(height: 16),
                 FilledButton.icon(
                   onPressed: members.isEmpty

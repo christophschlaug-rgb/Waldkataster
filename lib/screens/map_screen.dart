@@ -16,7 +16,9 @@ import '../models/forest_models.dart';
 import '../models/marked_point.dart';
 import '../services/flurstueck_service.dart';
 import '../services/geo_utils.dart';
+import '../services/photo_service.dart';
 import '../widgets/stand_editor.dart';
+import 'damage_sheet.dart';
 import 'forest_screen.dart';
 import 'object_sheet.dart';
 import 'parcel_screen.dart';
@@ -110,6 +112,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   List<_ParcelView> _parcels = [];
   List<Dept> _depts = [];
   List<ForestObject> _objects = [];
+  List<Damage> _damages = [];
   bool _pickMode = false;
   bool _pickBusy = false;
   FlurstueckHit? _pending;
@@ -179,12 +182,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       List<Parcel> parcels = [];
       List<Dept> depts = [];
       List<ForestObject> objects = [];
+      List<Damage> damages = [];
       try {
         final list = await DbService.instance.all();
         saved = {for (final p in list) p.id: p};
         parcels = await DbService.instance.parcels();
         depts = await DbService.instance.depts();
         objects = await DbService.instance.objects();
+        damages = await DbService.instance.damages();
       } catch (e) {
         dbError = e.toString();
       }
@@ -201,6 +206,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         _depts = depts;
         _setParcels(parcels);
         _objects = objects;
+        _damages = damages;
         _dbError = dbError;
         _client = client;
         _provider = NetworkTileProvider(httpClient: client);
@@ -512,15 +518,22 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     CadastralPoint? cad;
     MarkedPoint? own;
     ForestObject? obj;
+    Damage? dmg;
+
+    void clear() {
+      cad = null;
+      own = null;
+      obj = null;
+      dmg = null;
+    }
 
     if (_settings.pointsOn) {
       for (final c in _cad) {
         final d = _meters(tap, c.lat, c.lon);
         if (d < best) {
           best = d;
+          clear();
           cad = c;
-          own = null;
-          obj = null;
         }
       }
     }
@@ -529,31 +542,45 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       final d = _meters(tap, p.lat, p.lon);
       if (d < best) {
         best = d;
+        clear();
         own = p;
-        cad = null;
-        obj = null;
       }
     }
     for (final o in _objects) {
       final d = _meters(tap, o.lat, o.lon);
       if (d < best) {
         best = d;
+        clear();
         obj = o;
-        own = null;
-        cad = null;
+      }
+    }
+    for (final x in _damages) {
+      final d = _meters(tap, x.lat, x.lon);
+      if (d < best) {
+        best = d;
+        clear();
+        dmg = x;
       }
     }
 
-    if (obj != null) {
-      _openObjectSheet(obj);
+    final hitDamage = dmg;
+    final hitObject = obj;
+    final hitOwn = own;
+    final hitCad = cad;
+    if (hitDamage != null) {
+      _openDamageSheet(hitDamage);
       return;
     }
-    if (own != null) {
-      _openPointSheet(own);
+    if (hitObject != null) {
+      _openObjectSheet(hitObject);
       return;
     }
-    if (cad != null) {
-      _onCadastralTap(cad);
+    if (hitOwn != null) {
+      _openPointSheet(hitOwn);
+      return;
+    }
+    if (hitCad != null) {
+      _onCadastralTap(hitCad);
       return;
     }
 
@@ -593,11 +620,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       final parcels = await DbService.instance.parcels();
       final depts = await DbService.instance.depts();
       final objects = await DbService.instance.objects();
+      final damages = await DbService.instance.damages();
       if (!mounted) return;
       setState(() {
         _depts = depts;
         _setParcels(parcels);
         _objects = objects;
+        _damages = damages;
       });
     } catch (e) {
       _snack('Daten konnten nicht geladen werden: $e');
@@ -652,6 +681,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         for (final v in _parcels)
           if (v.parcel.deptId == id) ...v.geometry.allPoints,
       ]);
+    } else if (kind == 'damage') {
+      for (final d in _damages) {
+        if (d.id == id) {
+          if (_mapReady) {
+            setState(() => _follow = false);
+            _map.move(LatLng(d.lat, d.lon), 19);
+          }
+          await _openDamageSheet(d);
+          return;
+        }
+      }
     } else if (kind == 'repick') {
       setState(() {
         _repickId = id;
@@ -901,6 +941,82 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
+  // ------------------------------------------------ Kaefernest, Sturmschaden
+
+  Future<void> _createDamage(String kind, LatLng at, double? accuracy) async {
+    final now = DateTime.now();
+    final d = Damage(
+      id: newId('x'),
+      kind: kind,
+      lat: at.latitude,
+      lon: at.longitude,
+      accuracy: accuracy,
+      foundOn: DateTime(now.year, now.month, now.day),
+      status: kind == 'kaefer' ? 'Neu' : 'Offen',
+      parcelId: _parcelIdAt(at),
+      updatedAt: now,
+    );
+    await _openDamageSheet(d, isNew: true);
+  }
+
+  Future<void> _openDamageSheet(Damage d, {bool isNew = false}) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (ctx) => DamageSheet(
+        damage: d,
+        isNew: isNew,
+        parcelName: _parcelName(d.parcelId),
+        onSave: _saveDamage,
+        onDelete: () => _deleteDamage(d),
+        onTarget: () => _setTargetRaw(
+          id: d.id,
+          name: d.title,
+          lat: d.lat,
+          lon: d.lon,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _saveDamage(Damage d) async {
+    try {
+      final saved = d.parcelId == null
+          ? d.copyWith(parcelId: _parcelIdAt(LatLng(d.lat, d.lon)))
+          : d;
+      await DbService.instance.upsertDamage(saved);
+      if (!mounted) return;
+      setState(() {
+        final i = _damages.indexWhere((x) => x.id == saved.id);
+        if (i >= 0) {
+          _damages[i] = saved;
+        } else {
+          _damages.insert(0, saved);
+        }
+        if (_targetId == saved.id) _targetName = saved.title;
+      });
+    } catch (e) {
+      _snack('Speichern nicht möglich: $e');
+    }
+  }
+
+  Future<void> _deleteDamage(Damage d) async {
+    try {
+      for (final path in d.photos) {
+        await PhotoService.deleteFile(path);
+      }
+      await DbService.instance.deleteDamage(d.id);
+      if (!mounted) return;
+      setState(() {
+        _damages.removeWhere((x) => x.id == d.id);
+        if (_targetId == d.id) _clearTarget();
+      });
+    } catch (e) {
+      _snack('Löschen nicht möglich: $e');
+    }
+  }
+
   // -------------------------------------------- Jagdeinrichtung, Habitatbaum
 
   Future<void> _showCreateMenu(LatLng at, {double? accuracy}) async {
@@ -928,6 +1044,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               title: const Text('Habitatbaum'),
               onTap: () => Navigator.pop(ctx, 'habitat'),
             ),
+            ListTile(
+              leading: const Icon(Icons.bug_report),
+              title: const Text('Käfernest'),
+              onTap: () => Navigator.pop(ctx, 'kaefer'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.storm),
+              title: const Text('Sturmschaden'),
+              onTap: () => Navigator.pop(ctx, 'sturm'),
+            ),
           ],
         ),
       ),
@@ -936,6 +1062,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       await _createOwnPoint(at);
     } else if (choice == 'jagd' || choice == 'habitat') {
       await _createObject(choice!, at, accuracy);
+    } else if (choice == 'kaefer' || choice == 'sturm') {
+      await _createDamage(choice!, at, accuracy);
     }
   }
 
@@ -1610,6 +1738,29 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       child: ObjectMarker(
                         isJagd: o.isJagd,
                         isTarget: _targetId == o.id,
+                        size: size,
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+        if (_damages.isNotEmpty)
+          ValueListenableBuilder<double>(
+            valueListenable: _dotZoom,
+            builder: (context, z, _) {
+              final size = (14 + (z - 14) * 2.5).clamp(14.0, 30.0).toDouble();
+              return MarkerLayer(
+                markers: [
+                  for (final d in _damages)
+                    Marker(
+                      point: LatLng(d.lat, d.lon),
+                      width: size + 8,
+                      height: size + 8,
+                      child: DamageMarker(
+                        isKaefer: d.isKaefer,
+                        done: d.status == 'Aufgearbeitet',
+                        isTarget: _targetId == d.id,
                         size: size,
                       ),
                     ),

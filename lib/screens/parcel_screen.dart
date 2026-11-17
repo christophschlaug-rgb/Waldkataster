@@ -6,6 +6,7 @@ import '../models/forest_models.dart';
 import '../services/db_service.dart';
 import '../services/flurstueck_service.dart';
 import '../services/geo_utils.dart';
+import '../widgets/measure_widgets.dart';
 import '../widgets/stand_editor.dart';
 
 /// Steckbrief einer Parzelle: Name, Abteilung, Bestand, Kulturen, Objekte.
@@ -233,6 +234,13 @@ class _ParcelScreenState extends State<ParcelScreen> {
                 ),
                 const SizedBox(height: 8),
                 KulturEditor(ownerId: 'p:$id'),
+                const Divider(height: 32),
+                const Text(
+                  'Maßnahmen',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                MeasureEditor(ownerId: 'p:$id', ownerLabel: _parcel.name),
                 const Divider(height: 32),
                 const Text(
                   'Objekte in dieser Parzelle',
