@@ -33,13 +33,15 @@ class DbService {
     return openDatabase(
       path,
       password: password,
-      version: 2,
+      version: 3,
       onCreate: (db, version) async {
         await _createPoints(db);
         await _createForest(db);
+        await _createDamagesAndMeasures(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) await _createForest(db);
+        if (oldVersion < 3) await _createDamagesAndMeasures(db);
       },
     );
   }
@@ -60,6 +62,37 @@ class DbService {
         m_samples INTEGER,
         m_at TEXT,
         attrs TEXT,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+  }
+
+  Future<void> _createDamagesAndMeasures(Database db) async {
+    await db.execute('''
+      CREATE TABLE damages (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        lat REAL NOT NULL,
+        lon REAL NOT NULL,
+        accuracy REAL,
+        found_on TEXT NOT NULL,
+        amount REAL,
+        status TEXT,
+        note TEXT,
+        photos TEXT,
+        parcel_id TEXT,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE measures (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT,
+        art TEXT NOT NULL,
+        start_on TEXT NOT NULL,
+        end_on TEXT,
+        status TEXT NOT NULL,
+        note TEXT,
         updated_at TEXT NOT NULL
       )
     ''');
@@ -168,6 +201,7 @@ class DbService {
       await txn.delete('parcels', where: 'id = ?', whereArgs: [id]);
       await txn.delete('stands', where: 'owner_id = ?', whereArgs: ['p:$id']);
       await txn.delete('kulturen', where: 'owner_id = ?', whereArgs: ['p:$id']);
+      await txn.delete('measures', where: 'owner_id = ?', whereArgs: ['p:$id']);
       await txn.update('objects', {'parcel_id': null},
           where: 'parcel_id = ?', whereArgs: [id]);
     });
@@ -193,6 +227,7 @@ class DbService {
       await txn.delete('depts', where: 'id = ?', whereArgs: [id]);
       await txn.delete('stands', where: 'owner_id = ?', whereArgs: ['d:$id']);
       await txn.delete('kulturen', where: 'owner_id = ?', whereArgs: ['d:$id']);
+      await txn.delete('measures', where: 'owner_id = ?', whereArgs: ['d:$id']);
       await txn.update('parcels', {'dept_id': null},
           where: 'dept_id = ?', whereArgs: [id]);
     });
@@ -229,6 +264,45 @@ class DbService {
   Future<void> deleteKultur(String id) async {
     final db = await database;
     await db.delete('kulturen', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // ------------------------------------------------- Schaeden, Massnahmen
+
+  Future<List<Damage>> damages() async {
+    final db = await database;
+    final rows = await db.query('damages', orderBy: 'found_on DESC');
+    return rows.map(Damage.fromMap).toList();
+  }
+
+  Future<void> upsertDamage(Damage d) async {
+    final db = await database;
+    await db.insert('damages', d.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> deleteDamage(String id) async {
+    final db = await database;
+    await db.delete('damages', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<List<Measure>> measures({String? ownerId}) async {
+    final db = await database;
+    final rows = ownerId == null
+        ? await db.query('measures', orderBy: 'start_on ASC')
+        : await db.query('measures',
+            where: 'owner_id = ?', whereArgs: [ownerId], orderBy: 'start_on ASC');
+    return rows.map(Measure.fromMap).toList();
+  }
+
+  Future<void> upsertMeasure(Measure m) async {
+    final db = await database;
+    await db.insert('measures', m.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> deleteMeasure(String id) async {
+    final db = await database;
+    await db.delete('measures', where: 'id = ?', whereArgs: [id]);
   }
 
   // ------------------------------------------------------------ Objekte
