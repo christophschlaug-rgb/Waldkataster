@@ -340,3 +340,167 @@ class ForestObject {
     );
   }
 }
+
+// ------------------------------------------------------------ Schaeden
+
+const List<String> kKaeferStatus = ['Neu', 'In Aufarbeitung', 'Aufgearbeitet'];
+const List<String> kSturmStatus = ['Offen', 'In Aufarbeitung', 'Aufgearbeitet'];
+
+/// Kaefernest (kind 'kaefer') oder Sturmschaden (kind 'sturm').
+class Damage {
+  final String id;
+  final String kind;
+  final double lat;
+  final double lon;
+  final double? accuracy;
+  final DateTime foundOn;
+  final double? amount; // Kaefer: befallene Baeume, Sturm: Festmeter
+  final String status;
+  final String note;
+  final List<String> photos;
+  final String? parcelId;
+  final DateTime updatedAt;
+
+  const Damage({
+    required this.id,
+    required this.kind,
+    required this.lat,
+    required this.lon,
+    this.accuracy,
+    required this.foundOn,
+    this.amount,
+    this.status = '',
+    this.note = '',
+    this.photos = const [],
+    this.parcelId,
+    required this.updatedAt,
+  });
+
+  bool get isKaefer => kind == 'kaefer';
+  String get title => isKaefer ? 'Käfernest' : 'Sturmschaden';
+
+  Damage copyWith({
+    DateTime? foundOn,
+    double? amount,
+    bool clearAmount = false,
+    String? status,
+    String? note,
+    List<String>? photos,
+    String? parcelId,
+  }) {
+    return Damage(
+      id: id,
+      kind: kind,
+      lat: lat,
+      lon: lon,
+      accuracy: accuracy,
+      foundOn: foundOn ?? this.foundOn,
+      amount: clearAmount ? null : (amount ?? this.amount),
+      status: status ?? this.status,
+      note: note ?? this.note,
+      photos: photos ?? this.photos,
+      parcelId: parcelId ?? this.parcelId,
+      updatedAt: DateTime.now(),
+    );
+  }
+
+  Map<String, Object?> toMap() => {
+        'id': id,
+        'kind': kind,
+        'lat': lat,
+        'lon': lon,
+        'accuracy': accuracy,
+        'found_on': foundOn.toIso8601String(),
+        'amount': amount,
+        'status': status,
+        'note': note,
+        'photos': jsonEncode(photos),
+        'parcel_id': parcelId,
+        'updated_at': updatedAt.toIso8601String(),
+      };
+
+  factory Damage.fromMap(Map<String, Object?> m) {
+    var photos = <String>[];
+    final raw = m['photos'] as String?;
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        photos = (jsonDecode(raw) as List).map((e) => e.toString()).toList();
+      } catch (_) {}
+    }
+    return Damage(
+      id: m['id'] as String,
+      kind: m['kind'] as String,
+      lat: (m['lat'] as num).toDouble(),
+      lon: (m['lon'] as num).toDouble(),
+      accuracy: (m['accuracy'] as num?)?.toDouble(),
+      foundOn: DateTime.parse(m['found_on'] as String),
+      amount: (m['amount'] as num?)?.toDouble(),
+      status: (m['status'] as String?) ?? '',
+      note: (m['note'] as String?) ?? '',
+      photos: photos,
+      parcelId: m['parcel_id'] as String?,
+      updatedAt: DateTime.parse(m['updated_at'] as String),
+    );
+  }
+}
+
+// ---------------------------------------------------------- Massnahmen
+
+const List<String> kMassnahmenArten = [
+  'Pflanzung',
+  'Pflege',
+  'Durchforstung',
+  'Einschlag',
+  'Wegebau',
+  'Käferkontrolle',
+  'Kontrolle Jagdeinrichtung',
+  'Sonstiges',
+];
+
+const List<String> kMassnahmeStatus = ['Geplant', 'In Arbeit', 'Erledigt'];
+
+/// Geplante oder erledigte Massnahme, zugeordnet zu einer Parzelle
+/// (ownerId 'p:<id>'), einer Abteilung ('d:<id>') oder ohne Zuordnung ('').
+class Measure {
+  final String id;
+  final String ownerId;
+  final String art;
+  final DateTime start;
+  final DateTime? end;
+  final String status;
+  final String note;
+  final DateTime updatedAt;
+
+  const Measure({
+    required this.id,
+    this.ownerId = '',
+    required this.art,
+    required this.start,
+    this.end,
+    this.status = 'Geplant',
+    this.note = '',
+    required this.updatedAt,
+  });
+
+  Map<String, Object?> toMap() => {
+        'id': id,
+        'owner_id': ownerId,
+        'art': art,
+        'start_on': start.toIso8601String(),
+        'end_on': end?.toIso8601String(),
+        'status': status,
+        'note': note,
+        'updated_at': updatedAt.toIso8601String(),
+      };
+
+  factory Measure.fromMap(Map<String, Object?> m) => Measure(
+        id: m['id'] as String,
+        ownerId: (m['owner_id'] as String?) ?? '',
+        art: m['art'] as String,
+        start: DateTime.parse(m['start_on'] as String),
+        end: m['end_on'] == null ? null : DateTime.tryParse(m['end_on'] as String),
+        status: (m['status'] as String?) ?? 'Geplant',
+        note: (m['note'] as String?) ?? '',
+        updatedAt: DateTime.parse(m['updated_at'] as String),
+      );
+}
