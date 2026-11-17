@@ -2,7 +2,7 @@
 
 Android-App für den Wald in Rheinland-Pfalz: Flurkarte und Luftbild mit
 eigener GPS-Position, Grenzpunkte und Zielführung.
-(Meilenstein 1 bis 3 der Anforderungen.)
+(Meilenstein 1 bis 4 der Anforderungen.)
 
 ## Funktionen in dieser Version
 
@@ -103,3 +103,15 @@ rechtsverbindliche Grenzfeststellung.
 Die Ebenennamen und Koordinatensysteme der Kartendienste liest die App beim
 Start selbst aus den Dienstbeschreibungen (GetCapabilities). Falls eine Ebene
 fehlt, hilft die Seite "Dienste prüfen" (Menü Ebenen → Dienste prüfen).
+
+### Neu in Version 1.4 (Meilenstein 4: Schäden und Maßnahmen)
+
+- Käfernester (Anzahl befallener Bäume, Status) und Sturmschäden (geschätzte
+  Menge in Festmetern, Status) mit Datum, GPS, Fotos und Notiz; Zuordnung zur
+  Parzelle automatisch über die Position; Marker auf der Karte
+- Auswertung der Schäden je Parzelle und Jahr (Mein Wald → Schäden)
+- Maßnahmenkalender (Mein Wald → Maßnahmen): Art, Zeitraum, Status, Notiz,
+  zugeordnet zu Parzelle oder Abteilung; Filter nach Jahr, Status und
+  Zuordnung; Maßnahmen auch direkt im Steckbrief von Parzelle und Abteilung
+- Abteilungen: zur Auswahl stehen nur Parzellen, die in keiner anderen
+  Abteilung sind
