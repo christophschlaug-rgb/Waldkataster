@@ -1513,13 +1513,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       aerialMin = aerialSvc!.minZoomFor(WmsCatalog.defaultLayers(aerialSvc));
     }
 
-    final topo = _wmsLayer(
-      _services['topo'],
-      transparent: false,
-      opacity: 1,
-      maxZoom: (aerialWanted && aerialMin > 0) ? aerialMin - 0.01 : 22,
-    );
-    if (topo != null && !(aerialWanted && aerialMin == 0)) layers.add(topo);
+    // Die Karte RP liegt immer darunter: Wo das Luftbild noch laedt oder keine
+    // Bilder liefert, bleibt so die Karte sichtbar statt einer weissen Flaeche.
+    final topo = _wmsLayer(_services['topo'], transparent: false, opacity: 1);
+    if (topo != null) layers.add(topo);
 
     if (aerialWanted) {
       final aerial = _wmsLayer(
