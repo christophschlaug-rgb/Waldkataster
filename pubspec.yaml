@@ -1,7 +1,7 @@
 name: waldkataster_app
 description: "Waldkataster: Flurkarte, Luftbild und GPS-Position fuer den Wald (Rheinland-Pfalz)."
 publish_to: 'none'
-version: 1.4.0+9
+version: 1.4.1+10
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
