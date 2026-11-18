@@ -15,6 +15,28 @@ class TileCachingClient extends http.BaseClient {
   final Directory _dir;
   final Duration maxAge;
 
+  /// Luftbild-Kacheln (JPEG) unter ca. 3,5 KB sind praktisch einfarbig
+  /// (weiss): der Dienst liefert dort kein Bild (ausserhalb des Massstabs,
+  /// kein Datenbestand). Solche Kacheln gelten als Fehler, damit die
+  /// darunterliegende Karte sichtbar bleibt.
+  static const int _blankJpegLimit = 3500;
+
+  bool _isBlankJpeg(Uri url, int length) {
+    final t = url.toString().toLowerCase();
+    final jpeg = t.contains('image%2fjpeg') || t.contains('image/jpeg');
+    return jpeg && length < _blankJpegLimit;
+  }
+
+  http.StreamedResponse _notFound(http.BaseRequest request) {
+    return http.StreamedResponse(
+      Stream<List<int>>.value(const <int>[]),
+      404,
+      contentLength: 0,
+      request: request,
+      reasonPhrase: 'Kachel ohne Bild',
+    );
+  }
+
   File _fileFor(Uri url) {
     final key = md5.convert(utf8.encode(url.toString())).toString();
     return File('${_dir.path}/$key.tile');
@@ -30,13 +52,20 @@ class TileCachingClient extends http.BaseClient {
         final stat = await file.stat();
         if (DateTime.now().difference(stat.modified) < maxAge) {
           final bytes = await file.readAsBytes();
-          return http.StreamedResponse(
-            Stream.value(bytes),
-            200,
-            contentLength: bytes.length,
-            request: request,
-            headers: const {'content-type': 'image/png'},
-          );
+          if (_isBlankJpeg(request.url, bytes.length)) {
+            // alte, leere Kachel aus dem Zwischenspeicher verwerfen
+            try {
+              await file.delete();
+            } catch (_) {}
+          } else {
+            return http.StreamedResponse(
+              Stream.value(bytes),
+              200,
+              contentLength: bytes.length,
+              request: request,
+              headers: const {'content-type': 'image/png'},
+            );
+          }
         }
       }
     } catch (_) {
@@ -46,6 +75,11 @@ class TileCachingClient extends http.BaseClient {
     final response = await _inner.send(request);
     final bytes = await response.stream.toBytes();
     final type = (response.headers['content-type'] ?? '').toLowerCase();
+    if (response.statusCode == 200 &&
+        type.startsWith('image/') &&
+        _isBlankJpeg(request.url, bytes.length)) {
+      return _notFound(request);
+    }
     if (response.statusCode == 200 && type.startsWith('image/')) {
       try {
         await file.writeAsBytes(bytes);
