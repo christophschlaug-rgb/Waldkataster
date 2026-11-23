@@ -6,6 +6,7 @@ import 'package:sqflite_sqlcipher/sqflite.dart';
 
 import '../models/forest_models.dart';
 import '../models/marked_point.dart';
+import '../models/shape_models.dart';
 import 'secure_storage_service.dart';
 
 /// Verschluesselte lokale Datenbank (SQLCipher) fuer Punkte, Parzellen,
@@ -33,15 +34,17 @@ class DbService {
     return openDatabase(
       path,
       password: password,
-      version: 3,
+      version: 4,
       onCreate: (db, version) async {
         await _createPoints(db);
         await _createForest(db);
         await _createDamagesAndMeasures(db);
+        await _createShapes(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) await _createForest(db);
         if (oldVersion < 3) await _createDamagesAndMeasures(db);
+        if (oldVersion < 4) await _createShapes(db);
       },
     );
   }
@@ -93,6 +96,27 @@ class DbService {
         end_on TEXT,
         status TEXT NOT NULL,
         note TEXT,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+  }
+
+  Future<void> _createShapes(Database db) async {
+    await db.execute('''
+      CREATE TABLE shapes (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        points TEXT NOT NULL,
+        width REAL,
+        name TEXT,
+        date_on TEXT,
+        status TEXT,
+        amount REAL,
+        note TEXT,
+        photos TEXT,
+        area_m2 REAL,
+        length_m REAL,
+        shares TEXT,
         updated_at TEXT NOT NULL
       )
     ''');
@@ -303,6 +327,30 @@ class DbService {
   Future<void> deleteMeasure(String id) async {
     final db = await database;
     await db.delete('measures', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // ------------------------------------------------- Flaechen und Linien
+
+  Future<List<GeoShape>> shapes() async {
+    final db = await database;
+    final rows = await db.query('shapes', orderBy: 'updated_at DESC');
+    return rows.map(GeoShape.fromMap).toList();
+  }
+
+  Future<void> upsertShape(GeoShape s) async {
+    final db = await database;
+    await db.insert('shapes', s.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> deleteShape(String id) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete('shapes', where: 'id = ?', whereArgs: [id]);
+      await txn.delete('stands', where: 'owner_id = ?', whereArgs: ['s:$id']);
+      await txn.delete('kulturen', where: 'owner_id = ?', whereArgs: ['s:$id']);
+      await txn.delete('measures', where: 'owner_id = ?', whereArgs: ['s:$id']);
+    });
   }
 
   // ------------------------------------------------------------ Objekte
