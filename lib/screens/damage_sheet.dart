@@ -13,6 +13,7 @@ class DamageSheet extends StatefulWidget {
   final Future<void> Function(Damage updated) onSave;
   final Future<void> Function()? onDelete;
   final VoidCallback onTarget;
+  final VoidCallback? onDrawArea;
 
   const DamageSheet({
     super.key,
@@ -22,6 +23,7 @@ class DamageSheet extends StatefulWidget {
     required this.onSave,
     required this.onDelete,
     required this.onTarget,
+    this.onDrawArea,
   });
 
   @override
@@ -155,6 +157,18 @@ class _DamageSheetState extends State<DamageSheet> {
               onChanged: (p) => setState(() => _photos = p),
             ),
             const SizedBox(height: 12),
+            if (widget.onDrawArea != null && !widget.isNew)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: OutlinedButton.icon(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    widget.onDrawArea!();
+                  },
+                  icon: const Icon(Icons.gesture),
+                  label: const Text('Als Fläche einzeichnen'),
+                ),
+              ),
             Row(
               children: [
                 if (!widget.isNew)

@@ -14,6 +14,9 @@ import 'package:path_provider/path_provider.dart';
 import '../app_config.dart';
 import '../models/forest_models.dart';
 import '../models/marked_point.dart';
+import '../models/shape_models.dart';
+import '../services/geo_calc.dart';
+import '../widgets/draw_panel.dart';
 import '../services/flurstueck_service.dart';
 import '../services/geo_utils.dart';
 import '../services/photo_service.dart';
@@ -22,6 +25,7 @@ import 'damage_sheet.dart';
 import 'forest_screen.dart';
 import 'object_sheet.dart';
 import 'parcel_screen.dart';
+import 'shape_screen.dart';
 import '../services/db_service.dart';
 import '../services/grenzpunkt_service.dart';
 import '../services/heading_tracker.dart';
@@ -48,6 +52,16 @@ class _ParcelView {
   final ParcelGeometry geometry;
   final LatLng centroid;
   _ParcelView(this.parcel, this.geometry) : centroid = geometry.centroid;
+}
+
+/// Laufende Zeichnung einer Flaeche oder Linie.
+class _DrawSession {
+  final ShapeType type;
+  final GeoShape? replace;
+  final Damage? convertFrom;
+  final List<LatLng> points = [];
+  bool recording = false;
+  _DrawSession(this.type, {this.replace, this.convertFrom});
 }
 
 class MapScreen extends StatefulWidget {
@@ -113,6 +127,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   List<Dept> _depts = [];
   List<ForestObject> _objects = [];
   List<Damage> _damages = [];
+  List<GeoShape> _shapes = [];
+  _DrawSession? _draw;
   bool _pickMode = false;
   bool _pickBusy = false;
   FlurstueckHit? _pending;
@@ -183,6 +199,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       List<Dept> depts = [];
       List<ForestObject> objects = [];
       List<Damage> damages = [];
+      List<GeoShape> shapes = [];
       try {
         final list = await DbService.instance.all();
         saved = {for (final p in list) p.id: p};
@@ -190,6 +207,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         depts = await DbService.instance.depts();
         objects = await DbService.instance.objects();
         damages = await DbService.instance.damages();
+        shapes = await DbService.instance.shapes();
       } catch (e) {
         dbError = e.toString();
       }
@@ -207,6 +225,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         _setParcels(parcels);
         _objects = objects;
         _damages = damages;
+        _shapes = shapes;
         _dbError = dbError;
         _client = client;
         _provider = NetworkTileProvider(httpClient: client);
@@ -288,6 +307,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _samples.add(_Sample(p.latitude, p.longitude, p.accuracy));
     }
     _updateHaptics(p);
+    _recordWalk(p);
 
     if (!_mapReady) return;
     final ll = LatLng(p.latitude, p.longitude);
@@ -511,6 +531,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   /// 26 Bildpunkten Umkreis wird geoeffnet. Sonst gilt: im Auswahlmodus wird
   /// das Flurstueck geladen, sonst die angetippte eigene Parzelle gezeigt.
   void _onMapTap(LatLng tap) {
+    if (_draw != null) {
+      _drawAddPoint(tap);
+      return;
+    }
     final zoom = _map.camera.zoom;
     final metersPerPixel =
         156543.034 * math.cos(tap.latitude * math.pi / 180) / math.pow(2, zoom);
@@ -584,6 +608,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       return;
     }
 
+    final hitShape = _shapeAt(tap, 26 * metersPerPixel);
+    if (hitShape != null) {
+      _openShape(hitShape);
+      return;
+    }
+
     if (_repickId != null) {
       _pickParcelAt(tap);
       return;
@@ -621,12 +651,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       final depts = await DbService.instance.depts();
       final objects = await DbService.instance.objects();
       final damages = await DbService.instance.damages();
+      final shapes = await DbService.instance.shapes();
       if (!mounted) return;
       setState(() {
         _depts = depts;
         _setParcels(parcels);
         _objects = objects;
         _damages = damages;
+        _shapes = shapes;
       });
     } catch (e) {
       _snack('Daten konnten nicht geladen werden: $e');
@@ -681,6 +713,30 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         for (final v in _parcels)
           if (v.parcel.deptId == id) ...v.geometry.allPoints,
       ]);
+    } else if (kind == 'shape' || kind == 'shapetarget') {
+      for (final s in _shapes) {
+        if (s.id == id) {
+          if (kind == 'shape') {
+            _fitPoints(s.points);
+          } else {
+            final c = centroidOf(s.points);
+            await _setTargetRaw(
+              id: s.id,
+              name: s.title,
+              lat: c.latitude,
+              lon: c.longitude,
+            );
+          }
+          return;
+        }
+      }
+    } else if (kind == 'redraw') {
+      for (final s in _shapes) {
+        if (s.id == id) {
+          _startDraw(s.type, replace: s);
+          return;
+        }
+      }
     } else if (kind == 'damage') {
       for (final d in _damages) {
         if (d.id == id) {
@@ -941,6 +997,233 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
+  // ------------------------------------------------ Flaechen und Linien
+
+  List<ParcelRef> _parcelRefs() =>
+      [for (final v in _parcels) ParcelRef(v.parcel.id, v.geometry)];
+
+  Future<void> _chooseShapeType({required bool isLine}) async {
+    final types = kShapeTypes.where((t) => t.isLine == isLine).toList();
+    final choice = await showModalBottomSheet<ShapeType>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(
+                isLine ? 'Welche Linie?' : 'Welche Fläche?',
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ),
+            for (final t in types)
+              ListTile(
+                leading: Icon(t.icon, color: t.color),
+                title: Text(t.label),
+                onTap: () => Navigator.pop(ctx, t),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (choice != null) _startDraw(choice);
+  }
+
+  void _startDraw(ShapeType type, {GeoShape? replace, Damage? convertFrom}) {
+    setState(() {
+      _pickMode = false;
+      _repickId = null;
+      _draw = _DrawSession(type, replace: replace, convertFrom: convertFrom);
+    });
+    _snack(
+      'Tippe ${type.isLine ? 'die Punkte der Linie' : 'die Eckpunkte der Fläche'} '
+      'an oder starte die Aufzeichnung.',
+    );
+  }
+
+  void _drawAddPoint(LatLng p) {
+    final d = _draw;
+    if (d == null) return;
+    setState(() => d.points.add(p));
+  }
+
+  void _drawUndo() {
+    final d = _draw;
+    if (d == null || d.points.isEmpty) return;
+    setState(() => d.points.removeLast());
+  }
+
+  void _drawAddHere() {
+    final p = _pos;
+    if (p == null) {
+      _snack(_locationMessage ?? 'Noch kein GPS-Signal.');
+      return;
+    }
+    _drawAddPoint(LatLng(p.latitude, p.longitude));
+  }
+
+  void _drawToggleRecord() {
+    final d = _draw;
+    if (d == null) return;
+    if (!d.recording && _pos == null) {
+      _snack(_locationMessage ?? 'Noch kein GPS-Signal.');
+      return;
+    }
+    setState(() => d.recording = !d.recording);
+    if (d.recording) {
+      _snack('Aufzeichnung gestartet: gehe die Grenze ab (Punkte alle 3 m).');
+    }
+  }
+
+  /// Beim Gehen alle ca. 3 m einen Punkt aufnehmen (nur bei brauchbarem GPS).
+  void _recordWalk(Position p) {
+    final d = _draw;
+    if (d == null || !d.recording || !mounted) return;
+    if (p.accuracy > 25) return;
+    if (d.points.isNotEmpty &&
+        _meters(d.points.last, p.latitude, p.longitude) < 3) {
+      return;
+    }
+    setState(() => d.points.add(LatLng(p.latitude, p.longitude)));
+  }
+
+  void _drawCancel() => setState(() => _draw = null);
+
+  Future<void> _drawFinish() async {
+    final d = _draw;
+    if (d == null) return;
+    final needed = d.type.isLine ? 2 : 3;
+    if (d.points.length < needed) {
+      _snack('Zu wenige Punkte.');
+      return;
+    }
+
+    // Aufgezeichnete Routen glaetten (Abweichung bis 2 m entfernen)
+    final pts = simplifyPoints(d.points, 2.0);
+    final base = d.replace;
+    final dmg = d.convertFrom;
+    final width = base?.width ?? (d.type.isLine ? d.type.defaultWidth : 0.0);
+    final stats = computeShapeStats(
+      isLine: d.type.isLine,
+      points: pts,
+      width: width,
+      parcels: _parcelRefs(),
+    );
+
+    final now = DateTime.now();
+    final GeoShape shape;
+    if (base != null) {
+      shape = base.copyWith(
+        points: pts,
+        areaM2: stats.areaM2,
+        lengthM: stats.lengthM,
+        shares: stats.shares,
+      );
+    } else {
+      shape = GeoShape(
+        id: newId('s'),
+        kind: d.type.key,
+        points: pts,
+        width: width,
+        dateOn: dmg?.foundOn ??
+            (d.type.hasDate ? DateTime(now.year, now.month, now.day) : null),
+        status: dmg?.status ??
+            (d.type.statusOptions.isNotEmpty ? d.type.statusOptions.first : ''),
+        amount: dmg?.amount,
+        note: dmg?.note ?? '',
+        photos: dmg?.photos ?? const [],
+        areaM2: stats.areaM2,
+        lengthM: stats.lengthM,
+        shares: stats.shares,
+        updatedAt: now,
+      );
+    }
+
+    try {
+      await DbService.instance.upsertShape(shape);
+      // Aus einem Punkt wurde eine Flaeche: den Punkt entfernen
+      if (dmg != null && base == null) {
+        await DbService.instance.deleteDamage(dmg.id);
+      }
+    } catch (e) {
+      _snack('Speichern nicht möglich: $e');
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _draw = null);
+    await _reloadForest();
+    _snack(
+      '${shape.type.label} gespeichert: '
+      '${shape.isLine ? formatMeters(shape.lengthM) : formatArea(shape.areaM2)}',
+    );
+    await _openShape(shape);
+  }
+
+  Future<void> _openShape(GeoShape s) async {
+    final r = await Navigator.of(context).push<String>(
+      MaterialPageRoute(
+        builder: (_) => ShapeScreen(
+          shape: s,
+          parcels: [for (final v in _parcels) v.parcel],
+          allShapes: _shapes,
+        ),
+      ),
+    );
+    await _reloadForest();
+    await _handleAction(r);
+  }
+
+  /// Flaeche oder Linie an der angetippten Stelle (Linien zuerst, dann die
+  /// kleinste Flaeche).
+  GeoShape? _shapeAt(LatLng tap, double radiusM) {
+    GeoShape? best;
+    var bestScore = double.infinity;
+    for (final s in _shapes) {
+      double? score;
+      if (s.isLine) {
+        final d = distanceToLineM(tap, s.points);
+        if (d <= radiusM) score = d;
+      } else if (s.points.length >= 3 && pointInRing(tap, s.points)) {
+        score = 1000000 + s.areaM2;
+      }
+      if (score != null && score < bestScore) {
+        bestScore = score;
+        best = s;
+      }
+    }
+    return best;
+  }
+
+  Widget _buildDrawPanel() {
+    final d = _draw;
+    if (d == null) return const SizedBox.shrink();
+    final pts = d.points;
+    final area = (!d.type.isLine && pts.length >= 3) ? ringAreaM2(pts) : 0.0;
+    return Positioned(
+      left: 8,
+      right: 8,
+      bottom: 30,
+      child: SafeArea(
+        top: false,
+        child: DrawPanel(
+          type: d.type,
+          pointCount: pts.length,
+          areaM2: area,
+          lengthM: lineLengthM(pts),
+          recording: d.recording,
+          accuracyM: _pos?.accuracy,
+          onUndo: _drawUndo,
+          onToggleRecord: _drawToggleRecord,
+          onAddHere: _drawAddHere,
+          onFinish: _drawFinish,
+          onCancel: _drawCancel,
+        ),
+      ),
+    );
+  }
+
   // ------------------------------------------------ Kaefernest, Sturmschaden
 
   Future<void> _createDamage(String kind, LatLng at, double? accuracy) async {
@@ -970,6 +1253,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         parcelName: _parcelName(d.parcelId),
         onSave: _saveDamage,
         onDelete: () => _deleteDamage(d),
+        onDrawArea: isNew
+            ? null
+            : () => _startDraw(shapeTypeOf(d.kind), convertFrom: d),
         onTarget: () => _setTargetRaw(
           id: d.id,
           name: d.title,
@@ -1054,6 +1340,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               title: const Text('Sturmschaden'),
               onTap: () => Navigator.pop(ctx, 'sturm'),
             ),
+            ListTile(
+              leading: const Icon(Icons.gesture),
+              title: const Text('Fläche zeichnen'),
+              subtitle: const Text('Käfernest, Sturmschaden, Wild, Teilfläche, Polter'),
+              onTap: () => Navigator.pop(ctx, 'flaeche'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.timeline),
+              title: const Text('Linie zeichnen'),
+              subtitle: const Text('Rückegasse, Jagdschneise, Weg'),
+              onTap: () => Navigator.pop(ctx, 'linie'),
+            ),
           ],
         ),
       ),
@@ -1064,6 +1362,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       await _createObject(choice!, at, accuracy);
     } else if (choice == 'kaefer' || choice == 'sturm') {
       await _createDamage(choice!, at, accuracy);
+    } else if (choice == 'flaeche' || choice == 'linie') {
+      await _chooseShapeType(isLine: choice == 'linie');
     }
   }
 
@@ -1571,7 +1871,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         onMapReady: _onMapReady,
         onPositionChanged: _onCameraChanged,
         onTap: (tapPosition, point) => _onMapTap(point),
-        onLongPress: (tapPosition, point) => _showCreateMenu(point),
+        onLongPress: (tapPosition, point) {
+          if (_draw == null) _showCreateMenu(point);
+        },
       ),
       children: [
         ...layers,
@@ -1597,6 +1899,66 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 ),
           ],
         ),
+        PolygonLayer(
+          polygons: [
+            for (final sh in _shapes)
+              if (!sh.isLine && sh.points.length >= 3)
+                Polygon(
+                  points: sh.points,
+                  color: sh.type.color.withAlpha(75),
+                  borderColor: sh.type.color,
+                  borderStrokeWidth: 2.5,
+                ),
+            if (_draw != null && !_draw!.type.isLine && _draw!.points.length >= 3)
+              Polygon(
+                points: _draw!.points,
+                color: _draw!.type.color.withAlpha(60),
+                borderColor: _draw!.type.color,
+                borderStrokeWidth: 3,
+              ),
+          ],
+        ),
+        PolylineLayer(
+          polylines: [
+            for (final sh in _shapes)
+              if (sh.isLine && sh.points.length >= 2)
+                Polyline(
+                  points: sh.points,
+                  strokeWidth: 5,
+                  color: sh.type.color,
+                ),
+            if (_draw != null && _draw!.points.length >= 2)
+              Polyline(
+                points: _draw!.type.isLine
+                    ? _draw!.points
+                    : [..._draw!.points, _draw!.points.first],
+                strokeWidth: 3,
+                color: _draw!.type.color,
+              ),
+          ],
+        ),
+        if (_draw != null && _draw!.points.isNotEmpty)
+          MarkerLayer(
+            markers: [
+              for (var i = 0; i < _draw!.points.length; i++)
+                Marker(
+                  point: _draw!.points[i],
+                  width: 18,
+                  height: 18,
+                  child: IgnorePointer(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: i == _draw!.points.length - 1
+                            ? Colors.white
+                            : _draw!.type.color,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: _draw!.type.color, width: 2),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ValueListenableBuilder<double>(
           valueListenable: _dotZoom,
           builder: (context, z, _) {
@@ -2367,6 +2729,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           _buildButtons(),
           _buildAttribution(),
           _buildGuidance(),
+          _buildDrawPanel(),
         ],
       ),
     );

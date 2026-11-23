@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../models/forest_models.dart';
+import '../models/shape_models.dart';
+import '../services/geo_calc.dart';
+import 'shape_screen.dart';
 import '../services/db_service.dart';
 import '../services/geo_utils.dart';
 import '../services/photo_service.dart';
@@ -12,6 +15,13 @@ import 'point_sheet.dart';
 
 /// Uebersicht: Parzellen, Abteilungen und Objekte. Liefert beim Schliessen
 /// ggf. eine Aktion fuer die Karte ('parcel:..', 'dept:..', 'object:..').
+class _Repeat {
+  final GeoShape earlier;
+  final GeoShape later;
+  final double fraction;
+  const _Repeat(this.earlier, this.later, this.fraction);
+}
+
 class ForestScreen extends StatefulWidget {
   const ForestScreen({super.key});
 
@@ -25,6 +35,10 @@ class _ForestScreenState extends State<ForestScreen> {
   List<ForestObject> _objects = [];
   List<Damage> _damages = [];
   List<Measure> _measures = [];
+  List<GeoShape> _shapes = [];
+  List<_Repeat> _repeats = [];
+  String _shpType = '';
+  int? _shpYear;
   int? _dmgYear;
   int? _msrYear;
   String _msrStatus = '';
@@ -46,6 +60,7 @@ class _ForestScreenState extends State<ForestScreen> {
       final o = await DbService.instance.objects();
       final dm = await DbService.instance.damages();
       final ms = await DbService.instance.measures();
+      final sh = await DbService.instance.shapes();
       if (!mounted) return;
       setState(() {
         _parcels = p;
@@ -53,6 +68,8 @@ class _ForestScreenState extends State<ForestScreen> {
         _objects = o;
         _damages = dm;
         _measures = ms;
+        _shapes = sh;
+        _repeats = _computeRepeats(sh);
         _loaded = true;
         _error = null;
       });
@@ -185,6 +202,12 @@ class _ForestScreenState extends State<ForestScreen> {
   }
 
   String _ownerName(String ownerId) {
+    if (ownerId.startsWith('s:')) {
+      for (final s in _shapes) {
+        if ('s:${s.id}' == ownerId) return s.title;
+      }
+      return '';
+    }
     if (ownerId.startsWith('p:')) {
       for (final p in _parcels) {
         if ('p:${p.id}' == ownerId) return p.name;
@@ -212,6 +235,7 @@ class _ForestScreenState extends State<ForestScreen> {
       existing: existing,
       parcels: _parcels,
       depts: _depts,
+      shapes: _shapes,
     );
     if (m == null) return;
     try {
@@ -229,6 +253,186 @@ class _ForestScreenState extends State<ForestScreen> {
     if (!await confirmDelete(context, 'Maßnahme "${m.art}" löschen?')) return;
     await DbService.instance.deleteMeasure(m.id);
     await _load();
+  }
+
+  /// Flaechen gleichen Typs, die sich mit frueheren Eintraegen ueberschneiden.
+  List<_Repeat> _computeRepeats(List<GeoShape> shapes) {
+    final out = <_Repeat>[];
+    final areas = shapes
+        .where((s) => !s.isLine && s.type.hasDate && s.points.length >= 3)
+        .toList();
+    if (areas.length > 80) return out;
+    areas.sort((a, b) => (a.dateOn ?? DateTime(1900)).compareTo(b.dateOn ?? DateTime(1900)));
+    for (var i = 0; i < areas.length; i++) {
+      for (var j = i + 1; j < areas.length; j++) {
+        final a = areas[i];
+        final b = areas[j];
+        if (a.kind != b.kind) continue;
+        final f = overlapFraction(b.points, a.points);
+        if (f >= 0.1) out.add(_Repeat(a, b, f));
+      }
+    }
+    return out;
+  }
+
+  Future<void> _deleteShape(GeoShape s) async {
+    if (!await confirmDelete(context, '${s.title} löschen?')) return;
+    for (final path in s.photos) {
+      await PhotoService.deleteFile(path);
+    }
+    await DbService.instance.deleteShape(s.id);
+    await _load();
+  }
+
+  Widget _shapesTab() {
+    final years = {
+      for (final s in _shapes)
+        if (s.dateOn != null) s.dateOn!.year,
+    }.toList()
+      ..sort((a, b) => b.compareTo(a));
+
+    bool match(GeoShape s) =>
+        (_shpType.isEmpty || s.kind == _shpType) &&
+        (_shpYear == null || s.dateOn?.year == _shpYear);
+
+    final shown = _shapes.where(match).toList();
+
+    // Auswertung je Parzelle: Flaeche und Anzahl je Typ
+    final area = <String, Map<String, double>>{};
+    final cnt = <String, Map<String, int>>{};
+    for (final s in shown) {
+      for (final sh in s.shares) {
+        final pn = _parcelNameOf(sh.parcelId);
+        final name = sh.parcelId.isEmpty
+            ? 'Außerhalb eigener Parzellen'
+            : (pn.isEmpty ? 'Unbekannte Parzelle' : pn);
+        final a = area.putIfAbsent(name, () => {});
+        a[s.kind] = (a[s.kind] ?? 0) + sh.areaM2;
+        final c = cnt.putIfAbsent(name, () => {});
+        c[s.kind] = (c[s.kind] ?? 0) + 1;
+      }
+    }
+    final repeats = _repeats.where((r) => match(r.later)).toList();
+
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        Wrap(
+          spacing: 12,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            DropdownButton<String>(
+              value: _shpType.isEmpty ? 'Alle Typen' : _shpType,
+              items: [
+                const DropdownMenuItem<String>(
+                  value: 'Alle Typen',
+                  child: Text('Alle Typen'),
+                ),
+                for (final t in kShapeTypes)
+                  DropdownMenuItem<String>(value: t.key, child: Text(t.label)),
+              ],
+              onChanged: (v) =>
+                  setState(() => _shpType = (v == null || v == 'Alle Typen') ? '' : v),
+            ),
+            DropdownButton<String>(
+              value: _shpYear?.toString() ?? 'Alle Jahre',
+              items: [
+                const DropdownMenuItem<String>(
+                  value: 'Alle Jahre',
+                  child: Text('Alle Jahre'),
+                ),
+                for (final y in years)
+                  DropdownMenuItem<String>(value: '$y', child: Text('$y')),
+              ],
+              onChanged: (v) => setState(
+                () => _shpYear = (v == null || v == 'Alle Jahre') ? null : int.tryParse(v),
+              ),
+            ),
+          ],
+        ),
+        if (area.isNotEmpty)
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: Text(
+              'Auswertung je Parzelle (${shown.length} Einträge)',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            children: [
+              for (final e in area.entries)
+                ListTile(
+                  dense: true,
+                  title: Text(e.key),
+                  subtitle: Text(
+                    [
+                      for (final k in e.value.entries)
+                        '${shapeTypeOf(k.key).label}: ${cnt[e.key]?[k.key] ?? 0}× · ${formatArea(k.value)}',
+                    ].join('\n'),
+                  ),
+                ),
+            ],
+          ),
+        if (repeats.isNotEmpty)
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            leading: const Icon(Icons.history, color: Colors.orange),
+            title: Text(
+              'Wiederkehrende Schäden (${repeats.length})',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            children: [
+              for (final r in repeats)
+                ListTile(
+                  dense: true,
+                  title: Text(
+                    '${r.later.type.label}: '
+                    '${r.earlier.dateOn != null ? dateText(r.earlier.dateOn!) : 'früher'} '
+                    'und ${r.later.dateOn != null ? dateText(r.later.dateOn!) : 'später'}',
+                  ),
+                  subtitle: Text(
+                    '${(r.fraction * 100).round()} % der späteren Fläche war schon betroffen'
+                    '${r.later.shares.isNotEmpty && _parcelNameOf(r.later.shares.first.parcelId).isNotEmpty ? '\n${_parcelNameOf(r.later.shares.first.parcelId)}' : ''}',
+                  ),
+                  isThreeLine: r.later.shares.isNotEmpty &&
+                      _parcelNameOf(r.later.shares.first.parcelId).isNotEmpty,
+                  onTap: () => Navigator.of(context).pop('shape:${r.later.id}'),
+                ),
+            ],
+          ),
+        const SizedBox(height: 8),
+        if (shown.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Text(
+              'Noch keine Flächen oder Linien.\nLege sie mit dem Knopf '
+              '"Punkt anlegen" oder durch langes Drücken auf die Karte an '
+              '("Fläche zeichnen", "Linie zeichnen").',
+              style: TextStyle(color: Colors.grey),
+            ),
+          ),
+        for (final s in shown)
+          ListTile(
+            leading: CircleAvatar(
+              backgroundColor: s.type.color,
+              child: Icon(s.type.icon, color: Colors.white),
+            ),
+            title: Text(
+              '${s.title}${s.dateOn != null ? ' · ${dateText(s.dateOn!)}' : ''}',
+            ),
+            subtitle: Text(
+              '${s.isLine ? '${s.lengthM.round()} m · ' : ''}${formatArea(s.areaM2)}'
+              '${s.status.isNotEmpty ? ' · ${s.status}' : ''}',
+            ),
+            onTap: () => _open(
+              ShapeScreen(shape: s, parcels: _parcels, allShapes: _shapes),
+            ),
+            trailing: IconButton(
+              tooltip: 'Löschen',
+              icon: const Icon(Icons.delete_outline),
+              onPressed: () => _deleteShape(s),
+            ),
+          ),
+      ],
+    );
   }
 
   Widget _damagesTab() {
@@ -602,13 +806,14 @@ class _ForestScreenState extends State<ForestScreen> {
                   },
                 ),
           _damagesTab(),
+          _shapesTab(),
           _measuresTab(),
         ],
       );
     }
 
     return DefaultTabController(
-      length: 5,
+      length: 6,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Mein Wald'),
@@ -619,6 +824,7 @@ class _ForestScreenState extends State<ForestScreen> {
               Tab(text: 'Abteilungen'),
               Tab(text: 'Objekte'),
               Tab(text: 'Schäden'),
+              Tab(text: 'Flächen'),
               Tab(text: 'Maßnahmen'),
             ],
           ),

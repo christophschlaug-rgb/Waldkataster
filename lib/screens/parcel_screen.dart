@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import '../models/forest_models.dart';
+import '../models/shape_models.dart';
 import '../services/db_service.dart';
 import '../services/flurstueck_service.dart';
 import '../services/geo_utils.dart';
@@ -25,6 +26,7 @@ class _ParcelScreenState extends State<ParcelScreen> {
   late final TextEditingController _label;
   List<Dept> _depts = [];
   List<ForestObject> _objects = [];
+  List<GeoShape> _shapes = [];
   bool _loaded = false;
   String? _error;
 
@@ -48,10 +50,14 @@ class _ParcelScreenState extends State<ParcelScreen> {
     try {
       final depts = await DbService.instance.depts();
       final all = await DbService.instance.objects();
+      final shapes = await DbService.instance.shapes();
       if (!mounted) return;
       setState(() {
         _depts = depts;
         _objects = all.where((o) => o.parcelId == _parcel.id).toList();
+        _shapes = shapes
+            .where((s) => s.shares.any((x) => x.parcelId == _parcel.id))
+            .toList();
         _loaded = true;
       });
     } catch (e) {
@@ -241,6 +247,37 @@ class _ParcelScreenState extends State<ParcelScreen> {
                 ),
                 const SizedBox(height: 8),
                 MeasureEditor(ownerId: 'p:$id', ownerLabel: _parcel.name),
+                const Divider(height: 32),
+                const Text(
+                  'Flächen und Linien in dieser Parzelle',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                if (_shapes.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: Text(
+                      'Noch keine Käfernester, Sturmschäden, Rückegassen oder '
+                      'Teilflächen in dieser Parzelle.',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  ),
+                for (final sh in _shapes)
+                  Builder(builder: (context) {
+                    final share = sh.shares.firstWhere((x) => x.parcelId == _parcel.id);
+                    return ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(sh.type.icon, color: sh.type.color),
+                      title: Text(
+                        '${sh.title}${sh.dateOn != null ? ' · ${dateText(sh.dateOn!)}' : ''}',
+                      ),
+                      subtitle: Text(
+                        '${formatArea(share.areaM2)}'
+                        '${sh.isLine ? ' · ${share.lengthM.round()} m' : ''}'
+                        ' in dieser Parzelle',
+                      ),
+                      onTap: () => Navigator.of(context).pop('shape:${sh.id}'),
+                    );
+                  }),
                 const Divider(height: 32),
                 const Text(
                   'Objekte in dieser Parzelle',
