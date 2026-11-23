@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/forest_models.dart';
+import '../models/shape_models.dart';
 import '../services/db_service.dart';
 import 'stand_editor.dart';
 
@@ -59,6 +60,7 @@ Future<Measure?> showMeasureDialog(
   Measure? existing,
   List<Parcel> parcels = const [],
   List<Dept> depts = const [],
+  List<GeoShape> shapes = const [],
   String? fixedOwner,
   String fixedOwnerLabel = '',
 }) async {
@@ -75,6 +77,12 @@ Future<Measure?> showMeasureDialog(
   }
   for (final p in parcels) {
     ownerOptions[uniqueKey(ownerOptions, 'Parzelle: ${p.name}')] = 'p:${p.id}';
+  }
+  for (final s in shapes) {
+    ownerOptions[uniqueKey(
+      ownerOptions,
+      '${s.isLine ? 'Linie' : 'Fläche'}: ${s.title}',
+    )] = 's:${s.id}';
   }
 
   String ownerLabel() {
