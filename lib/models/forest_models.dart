@@ -344,7 +344,7 @@ class ForestObject {
 // ------------------------------------------------------------ Schaeden
 
 const List<String> kKaeferStatus = ['Neu', 'In Aufarbeitung', 'Aufgearbeitet'];
-const List<String> kSturmStatus = ['Offen', 'In Aufarbeitung', 'Aufgearbeitet'];
+const List<String> kSturmStatus = ['Nicht aufgearbeitet', 'In Aufarbeitung', 'Aufgearbeitet'];
 
 /// Kaefernest (kind 'kaefer') oder Sturmschaden (kind 'sturm').
 class Damage {

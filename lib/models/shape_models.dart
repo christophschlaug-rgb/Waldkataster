@@ -17,6 +17,10 @@ class ShapeType {
   final String? amountLabel;
   final bool hasDate;
 
+  /// true: Schaeden, bei denen ein wiederholtes Auftreten an derselben
+  /// Stelle ausgewertet wird.
+  final bool trackRepeats;
+
   const ShapeType({
     required this.key,
     required this.label,
@@ -27,6 +31,7 @@ class ShapeType {
     this.statusOptions = const [],
     this.amountLabel,
     this.hasDate = false,
+    this.trackRepeats = false,
   });
 }
 
@@ -40,6 +45,7 @@ const List<ShapeType> kShapeTypes = [
     statusOptions: kKaeferStatus,
     amountLabel: 'Anzahl befallener Bäume',
     hasDate: true,
+    trackRepeats: true,
   ),
   ShapeType(
     key: 'sturm',
@@ -50,6 +56,7 @@ const List<ShapeType> kShapeTypes = [
     statusOptions: kSturmStatus,
     amountLabel: 'Geschätzte Menge in Festmetern',
     hasDate: true,
+    trackRepeats: true,
   ),
   ShapeType(
     key: 'wild',
@@ -59,17 +66,21 @@ const List<ShapeType> kShapeTypes = [
     icon: Icons.pets,
     statusOptions: ['Neu', 'Dokumentiert', 'Behoben'],
     hasDate: true,
+    trackRepeats: true,
   ),
   ShapeType(
-    key: 'teil',
-    label: 'Teilfläche',
+    key: 'pflanzung',
+    label: 'Anpflanzung',
     isLine: false,
-    color: Color(0xFF00897B),
-    icon: Icons.grid_view,
+    color: Color(0xFF43A047),
+    icon: Icons.grass,
+    statusOptions: ['Geplant', 'Gepflanzt', 'Nachbesserung nötig'],
+    amountLabel: 'Anzahl Pflanzen',
+    hasDate: true,
   ),
   ShapeType(
     key: 'polter',
-    label: 'Holzpolter',
+    label: 'Polterplatz',
     isLine: false,
     color: Color(0xFF6D4C41),
     icon: Icons.layers,
