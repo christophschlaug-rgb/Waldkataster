@@ -1002,26 +1002,27 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   List<ParcelRef> _parcelRefs() =>
       [for (final v in _parcels) ParcelRef(v.parcel.id, v.geometry)];
 
-  Future<void> _chooseShapeType({required bool isLine}) async {
-    final types = kShapeTypes.where((t) => t.isLine == isLine).toList();
+  Future<void> _chooseShapeType() async {
     final choice = await showModalBottomSheet<ShapeType>(
       context: context,
+      isScrollControlled: true,
       showDragHandle: true,
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        child: ListView(
+          shrinkWrap: true,
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: Text(
-                isLine ? 'Welche Linie?' : 'Welche Fläche?',
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                'Was möchtest du zeichnen?',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
             ),
-            for (final t in types)
+            for (final t in kShapeTypes)
               ListTile(
                 leading: Icon(t.icon, color: t.color),
                 title: Text(t.label),
+                subtitle: t.isLine ? const Text('Linie mit Breite') : null,
                 onTap: () => Navigator.pop(ctx, t),
               ),
           ],
@@ -1235,7 +1236,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       lon: at.longitude,
       accuracy: accuracy,
       foundOn: DateTime(now.year, now.month, now.day),
-      status: kind == 'kaefer' ? 'Neu' : 'Offen',
+      status: kind == 'kaefer' ? 'Neu' : 'Nicht aufgearbeitet',
       parcelId: _parcelIdAt(at),
       updatedAt: now,
     );
@@ -1331,26 +1332,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               onTap: () => Navigator.pop(ctx, 'habitat'),
             ),
             ListTile(
-              leading: const Icon(Icons.bug_report),
-              title: const Text('Käfernest'),
-              onTap: () => Navigator.pop(ctx, 'kaefer'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.storm),
-              title: const Text('Sturmschaden'),
-              onTap: () => Navigator.pop(ctx, 'sturm'),
-            ),
-            ListTile(
               leading: const Icon(Icons.gesture),
               title: const Text('Fläche zeichnen'),
-              subtitle: const Text('Käfernest, Sturmschaden, Wild, Teilfläche, Polter'),
+              subtitle: const Text(
+                'Käfernest, Sturmschaden, Wildschaden, Anpflanzung, '
+                'Polterplatz, Rückegasse, Jagdschneise, Weg',
+              ),
               onTap: () => Navigator.pop(ctx, 'flaeche'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.timeline),
-              title: const Text('Linie zeichnen'),
-              subtitle: const Text('Rückegasse, Jagdschneise, Weg'),
-              onTap: () => Navigator.pop(ctx, 'linie'),
             ),
           ],
         ),
@@ -1362,8 +1350,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       await _createObject(choice!, at, accuracy);
     } else if (choice == 'kaefer' || choice == 'sturm') {
       await _createDamage(choice!, at, accuracy);
-    } else if (choice == 'flaeche' || choice == 'linie') {
-      await _chooseShapeType(isLine: choice == 'linie');
+    } else if (choice == 'flaeche') {
+      await _chooseShapeType();
     }
   }
 

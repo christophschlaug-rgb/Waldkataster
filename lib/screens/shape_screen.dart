@@ -75,7 +75,7 @@ class _ShapeScreenState extends State<ShapeScreen> {
 
   void _computeOverlaps() {
     final list = <_Overlap>[];
-    if (_shape.type.hasDate && !_shape.isLine) {
+    if (_shape.type.trackRepeats && !_shape.isLine) {
       for (final o in widget.allShapes) {
         if (o.id == _shape.id || o.kind != _shape.kind || o.isLine) continue;
         final f = overlapFraction(_shape.points, o.points);
@@ -335,7 +335,7 @@ class _ShapeScreenState extends State<ShapeScreen> {
               ),
             ),
           ],
-          if (_shape.kind == 'teil') ...[
+          if (_shape.kind == 'pflanzung') ...[
             const Divider(height: 32),
             const Text(
               'Bestandsaufnahme',

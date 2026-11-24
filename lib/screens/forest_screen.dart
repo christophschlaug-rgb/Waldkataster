@@ -259,7 +259,7 @@ class _ForestScreenState extends State<ForestScreen> {
   List<_Repeat> _computeRepeats(List<GeoShape> shapes) {
     final out = <_Repeat>[];
     final areas = shapes
-        .where((s) => !s.isLine && s.type.hasDate && s.points.length >= 3)
+        .where((s) => !s.isLine && s.type.trackRepeats && s.points.length >= 3)
         .toList();
     if (areas.length > 80) return out;
     areas.sort((a, b) => (a.dateOn ?? DateTime(1900)).compareTo(b.dateOn ?? DateTime(1900)));
@@ -508,9 +508,9 @@ class _ForestScreenState extends State<ForestScreen> {
           const Padding(
             padding: EdgeInsets.all(16),
             child: Text(
-              'Noch keine Schäden erfasst.\nLege ein Käfernest oder einen '
-              'Sturmschaden mit dem Knopf "Punkt anlegen" oder durch langes '
-              'Drücken auf die Karte an.',
+              'Hier stehen als Punkt erfasste Schäden.\nKäfernester und '
+              'Sturmschäden zeichnest du als Fläche (Knopf "Punkt anlegen" '
+              'oder langes Drücken auf die Karte, dann "Fläche zeichnen").',
               style: TextStyle(color: Colors.grey),
             ),
           ),

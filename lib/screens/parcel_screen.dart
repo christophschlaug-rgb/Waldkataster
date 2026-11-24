@@ -257,7 +257,7 @@ class _ParcelScreenState extends State<ParcelScreen> {
                     padding: EdgeInsets.symmetric(vertical: 8),
                     child: Text(
                       'Noch keine Käfernester, Sturmschäden, Rückegassen oder '
-                      'Teilflächen in dieser Parzelle.',
+                      'Anpflanzungen in dieser Parzelle.',
                       style: TextStyle(color: Colors.grey),
                     ),
                   ),
