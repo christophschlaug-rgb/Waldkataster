@@ -34,7 +34,7 @@ class DbService {
     return openDatabase(
       path,
       password: password,
-      version: 4,
+      version: 5,
       onCreate: (db, version) async {
         await _createPoints(db);
         await _createForest(db);
@@ -45,6 +45,18 @@ class DbService {
         if (oldVersion < 2) await _createForest(db);
         if (oldVersion < 3) await _createDamagesAndMeasures(db);
         if (oldVersion < 4) await _createShapes(db);
+        if (oldVersion < 5) {
+          // Teilflaeche heisst jetzt Anpflanzung; Sturmschaden-Status umbenannt
+          await db.execute("UPDATE shapes SET kind = 'pflanzung' WHERE kind = 'teil'");
+          await db.execute(
+            "UPDATE shapes SET status = 'Nicht aufgearbeitet' "
+            "WHERE kind = 'sturm' AND status = 'Offen'",
+          );
+          await db.execute(
+            "UPDATE damages SET status = 'Nicht aufgearbeitet' "
+            "WHERE kind = 'sturm' AND status = 'Offen'",
+          );
+        }
       },
     );
   }
