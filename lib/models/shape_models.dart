@@ -108,7 +108,7 @@ const List<ShapeType> kShapeTypes = [
     key: 'weg',
     label: 'Weg',
     isLine: true,
-    color: Color(0xFF616161),
+    color: Color(0xFFFF4081),
     icon: Icons.timeline,
     defaultWidth: 3,
   ),
