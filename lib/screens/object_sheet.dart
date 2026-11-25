@@ -36,6 +36,7 @@ class _ObjectSheetState extends State<ObjectSheet> {
   late DateTime? _checked;
   late List<String> _photos;
   late final TextEditingController _number;
+  late final TextEditingController _nameCtl;
   late final TextEditingController _note;
 
   @override
@@ -47,12 +48,14 @@ class _ObjectSheetState extends State<ObjectSheet> {
     _checked = o.checkedOn;
     _photos = List<String>.of(o.photos);
     _number = TextEditingController(text: o.number);
+    _nameCtl = TextEditingController(text: o.subtype);
     _note = TextEditingController(text: o.note);
   }
 
   @override
   void dispose() {
     _number.dispose();
+    _nameCtl.dispose();
     _note.dispose();
     super.dispose();
   }
@@ -131,10 +134,11 @@ class _ObjectSheetState extends State<ObjectSheet> {
 
   Future<void> _save() async {
     final o = widget.object.copyWith(
-      subtype: _subtype,
+      subtype: widget.object.isPflanz ? _nameCtl.text.trim() : _subtype,
       number: _number.text.trim(),
       zustand: _zustand,
       checkedOn: _checked,
+      clearChecked: _checked == null,
       note: _note.text.trim(),
       photos: _photos,
     );
@@ -249,11 +253,42 @@ class _ObjectSheetState extends State<ObjectSheet> {
                 ],
               ),
             ] else if (o.isPflanz) ...[
+              TextField(
+                controller: _nameCtl,
+                decoration: const InputDecoration(
+                  labelText: 'Name (optional)',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _checked == null
+                          ? 'Datum: offen'
+                          : 'Datum: ${formatDate(_checked!).substring(0, 10)}',
+                    ),
+                  ),
+                  if (_checked != null)
+                    IconButton(
+                      tooltip: 'Datum entfernen',
+                      icon: const Icon(Icons.clear),
+                      onPressed: () => setState(() => _checked = null),
+                    ),
+                  IconButton(
+                    tooltip: 'Datum wählen',
+                    icon: const Icon(Icons.calendar_month),
+                    onPressed: _pickDate,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
               LabeledDropdown(
-                label: 'Baumart',
-                value: _subtype,
-                options: kBaumarten,
-                onChanged: (v) => setState(() => _subtype = v),
+                label: 'Status',
+                value: _zustand,
+                options: kPflanzStatus,
+                onChanged: (v) => setState(() => _zustand = v),
               ),
               const SizedBox(height: 12),
               TextField(
@@ -263,34 +298,6 @@ class _ObjectSheetState extends State<ObjectSheet> {
                   labelText: 'Anzahl Pflanzen',
                   border: OutlineInputBorder(),
                 ),
-              ),
-              const SizedBox(height: 12),
-              LabeledDropdown(
-                label: 'Status',
-                value: _zustand,
-                options: kPflanzStatus,
-                onChanged: (v) => setState(() => _zustand = v),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      _checked == null
-                          ? 'Pflanzdatum: offen'
-                          : 'Pflanzdatum: ${formatDate(_checked!).substring(0, 10)}',
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: () => setState(() => _checked = DateTime.now()),
-                    child: const Text('Heute'),
-                  ),
-                  IconButton(
-                    tooltip: 'Datum wählen',
-                    icon: const Icon(Icons.calendar_month),
-                    onPressed: _pickDate,
-                  ),
-                ],
               ),
             ] else ...[
               LabeledDropdown(
@@ -314,7 +321,7 @@ class _ObjectSheetState extends State<ObjectSheet> {
               minLines: 2,
               maxLines: 4,
               decoration: const InputDecoration(
-                labelText: 'Kommentar',
+                labelText: o.isPflanz ? 'Notiz' : 'Kommentar',
                 border: OutlineInputBorder(),
               ),
             ),

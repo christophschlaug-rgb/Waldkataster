@@ -26,6 +26,7 @@ import 'forest_screen.dart';
 import 'object_sheet.dart';
 import 'parcel_screen.dart';
 import 'shape_screen.dart';
+import 'view_screen.dart';
 import '../services/db_service.dart';
 import '../services/grenzpunkt_service.dart';
 import '../services/heading_tracker.dart';
@@ -569,7 +570,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       }
     }
     for (final p in _saved.values) {
-      if (!p.isOwn) continue;
+      if (!p.isOwn || !_vis('own')) continue;
       final d = _meters(tap, p.lat, p.lon);
       if (d < best) {
         best = d;
@@ -578,6 +579,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       }
     }
     for (final o in _objects) {
+      if (!_vis(o.kind)) continue;
       final d = _meters(tap, o.lat, o.lon);
       if (d < best) {
         best = d;
@@ -586,6 +588,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       }
     }
     for (final x in _damages) {
+      if (!_vis('damages')) continue;
       final d = _meters(tap, x.lat, x.lon);
       if (d < best) {
         best = d;
@@ -625,7 +628,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _pickParcelAt(tap);
       return;
     }
-    for (final v in _parcels) {
+    for (final v in (_vis('parcels') ? _parcels : <_ParcelView>[])) {
       if (v.geometry.contains(tap)) {
         _showParcelQuick(v.parcel);
         return;
@@ -1189,6 +1192,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     GeoShape? best;
     var bestScore = double.infinity;
     for (final s in _shapes) {
+      if (!_vis('shape:${s.kind}')) continue;
       double? score;
       if (s.isLine) {
         final d = distanceToLineM(tap, s.points);
@@ -1342,7 +1346,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             ),
             ListTile(
               leading: const Icon(Icons.grass),
-              title: const Text('Anpflanzung (Punkt)'),
+              title: const Text('Anpflanzung'),
               subtitle: const Text('Einzelne Bäume oder kleine Gruppe'),
               onTap: () => Navigator.pop(ctx, 'pflanz'),
             ),
@@ -1368,7 +1372,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     var target = at;
     var acc = accuracy;
     if (target == null) {
-      final where = await _askWhere();
+      final where = choice == 'habitat' ? 'here' : await _askWhere();
       if (where == null) return;
       if (where == 'here') {
         final p = _pos;
@@ -1937,7 +1941,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ...layers,
         PolygonLayer(
           polygons: [
-            for (final v in _parcels)
+            for (final v in (_vis('parcels') ? _parcels : <_ParcelView>[]))
               for (final poly in v.geometry.polygons)
                 Polygon(
                   points: poly.first,
@@ -1960,7 +1964,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         PolygonLayer(
           polygons: [
             for (final sh in _shapes)
-              if (!sh.isLine && sh.points.length >= 3)
+              if (!sh.isLine && sh.points.length >= 3 && _vis('shape:${sh.kind}'))
                 Polygon(
                   points: sh.points,
                   color: sh.type.color.withAlpha(75),
@@ -1979,7 +1983,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         PolylineLayer(
           polylines: [
             for (final sh in _shapes)
-              if (sh.isLine && sh.points.length >= 2)
+              if (sh.isLine && sh.points.length >= 2 && _vis('shape:${sh.kind}'))
                 Polyline(
                   points: sh.points,
                   strokeWidth: 5,
@@ -2020,7 +2024,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ValueListenableBuilder<double>(
           valueListenable: _dotZoom,
           builder: (context, z, _) {
-            if (z < 13 || _parcels.isEmpty || !_settings.parcelLabels) {
+            if (z < 13 ||
+                _parcels.isEmpty ||
+                !_settings.parcelLabels ||
+                !_vis('parcels')) {
               return const SizedBox.shrink();
             }
             return MarkerLayer(
@@ -2125,7 +2132,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             final dot = dotSizeForZoom(z);
             return MarkerLayer(
               markers: [
-                for (final p in _saved.values.where((p) => p.isOwn))
+                for (final p in _saved.values.where((p) => p.isOwn && _vis('own')))
                   Marker(
                     point: LatLng(p.lat, p.lon),
                     width: dot + 14,
@@ -2148,6 +2155,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               return MarkerLayer(
                 markers: [
                   for (final o in _objects)
+                    if (_vis(o.kind))
                     Marker(
                       point: LatLng(o.lat, o.lon),
                       width: size + 8,
@@ -2171,6 +2179,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               return MarkerLayer(
                 markers: [
                   for (final d in _damages)
+                    if (_vis('damages'))
                     Marker(
                       point: LatLng(d.lat, d.lon),
                       width: size + 8,
@@ -2551,6 +2560,34 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     ];
   }
 
+  bool _vis(String key) => !_settings.hidden.contains(key);
+
+  void _openView() {
+    final counts = <String, int>{
+      'own': _saved.values.where((p) => p.isOwn).length,
+      'damages': _damages.length,
+      'parcels': _parcels.length,
+    };
+    for (final o in _objects) {
+      counts[o.kind] = (counts[o.kind] ?? 0) + 1;
+    }
+    for (final s in _shapes) {
+      counts['shape:${s.kind}'] = (counts['shape:${s.kind}'] ?? 0) + 1;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ViewScreen(
+          settings: _settings,
+          counts: counts,
+          onChanged: () {
+            if (mounted) setState(() {});
+            _settings.save();
+          },
+        ),
+      ),
+    );
+  }
+
   List<Widget> _aerialLayerTiles(StateSetter setSheet) {
     final svc = _services['dop'];
     if (svc == null || !svc.usable) {
@@ -2591,9 +2628,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         shrinkWrap: true,
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         children: [
-          const Text(
-            'Hintergrund',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          Row(
+            children: [
+              IconButton(
+                tooltip: 'Zurück zur Karte',
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () => Navigator.of(ctx).pop(),
+              ),
+              const Text(
+                'Hintergrund',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ],
           ),
           const SizedBox(height: 8),
           SegmentedButton<BaseMap>(
@@ -2695,6 +2741,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             },
           ),
           const Divider(),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.visibility_outlined),
+            title: const Text('Ansicht'),
+            subtitle: const Text('Punkte, Flächen und Linien ein- und ausblenden'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () {
+              Navigator.of(ctx).pop();
+              _openView();
+            },
+          ),
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.forest),
