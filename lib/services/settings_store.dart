@@ -20,6 +20,9 @@ class MapSettings {
   /// Gewaehlte Ebenen des Luftbilds; null = Standardauswahl der App.
   List<String>? aerialLayers;
 
+  /// Ausgeblendete Arten (Schluessel siehe Ansicht), z. B. 'jagd', 'shape:weg'.
+  final Set<String> hidden;
+
   MapSettings({
     this.base = BaseMap.aerial,
     this.flurOn = true,
@@ -32,7 +35,8 @@ class MapSettings {
     this.hintSeen = false,
     this.flurLayers,
     this.aerialLayers,
-  });
+    Set<String>? hidden,
+  }) : hidden = hidden ?? <String>{};
 
   static Future<MapSettings> load() async {
     final p = await SharedPreferences.getInstance();
@@ -48,6 +52,7 @@ class MapSettings {
       hintSeen: p.getBool('hintSeen') ?? false,
       flurLayers: p.getStringList('flurLayers'),
       aerialLayers: p.getStringList('aerialLayers'),
+      hidden: (p.getStringList('hidden') ?? const <String>[]).toSet(),
     );
   }
 
@@ -68,6 +73,7 @@ class MapSettings {
     } else {
       await p.setStringList('flurLayers', layers);
     }
+    await p.setStringList('hidden', hidden.toList());
     final aerial = aerialLayers;
     if (aerial == null) {
       await p.remove('aerialLayers');
