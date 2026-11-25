@@ -320,7 +320,7 @@ class _ObjectSheetState extends State<ObjectSheet> {
               controller: _note,
               minLines: 2,
               maxLines: 4,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: o.isPflanz ? 'Notiz' : 'Kommentar',
                 border: OutlineInputBorder(),
               ),
