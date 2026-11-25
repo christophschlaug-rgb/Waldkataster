@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:flutter/material.dart';
+
 const List<String> kBaumarten = [
   'Fichte',
   'Kiefer',
@@ -261,11 +263,16 @@ class ForestObject {
   });
 
   bool get isJagd => kind == 'jagd';
+  bool get isPflanz => kind == 'pflanz';
 
   String get title {
     if (isJagd) {
       final t = kJagdTypen[subtype] ?? 'Jagdeinrichtung';
       return number.isEmpty ? t : '$t $number';
+    }
+    if (isPflanz) {
+      final t = subtype.isEmpty ? 'Anpflanzung' : 'Anpflanzung $subtype';
+      return number.isEmpty ? t : '$t ($number)';
     }
     final t = subtype.isEmpty ? 'Habitatbaum' : 'Habitatbaum $subtype';
     return number.isEmpty ? t : '$t Nr. $number';
@@ -504,3 +511,18 @@ class Measure {
         updatedAt: DateTime.parse(m['updated_at'] as String),
       );
 }
+
+/// Symbol und Farbe eines Waldobjekts (Jagdeinrichtung, Habitatbaum, Anpflanzung).
+IconData objectIconOf(ForestObject o) {
+  if (o.isJagd) return Icons.cabin;
+  if (o.isPflanz) return Icons.grass;
+  return Icons.park;
+}
+
+Color objectColorOf(ForestObject o) {
+  if (o.isJagd) return const Color(0xFF6A1B9A);
+  if (o.isPflanz) return const Color(0xFF43A047);
+  return const Color(0xFF2E7D32);
+}
+
+const List<String> kPflanzStatus = ['Geplant', 'Gepflanzt', 'Nachbesserung nötig'];
