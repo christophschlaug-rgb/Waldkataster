@@ -294,7 +294,7 @@ class _ParcelScreenState extends State<ParcelScreen> {
                 for (final o in _objects)
                   ListTile(
                     contentPadding: EdgeInsets.zero,
-                    leading: Icon(o.isJagd ? Icons.cabin : Icons.park),
+                    leading: Icon(objectIconOf(o)),
                     title: Text(o.title),
                     subtitle: Text(o.zustand.isEmpty ? '–' : o.zustand),
                     onTap: () => Navigator.of(context).pop('object:${o.id}'),

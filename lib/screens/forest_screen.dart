@@ -789,7 +789,7 @@ class _ForestScreenState extends State<ForestScreen> {
                     final o = _objects[i];
                     return ListTile(
                       leading: CircleAvatar(
-                        child: Icon(o.isJagd ? Icons.cabin : Icons.park),
+                        child: Icon(objectIconOf(o)),
                       ),
                       title: Text(o.title),
                       subtitle: Text(

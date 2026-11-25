@@ -179,7 +179,7 @@ class _ObjectSheetState extends State<ObjectSheet> {
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
           children: [
             Text(
-              o.isJagd ? 'Jagdeinrichtung' : 'Habitatbaum',
+              o.isJagd ? 'Jagdeinrichtung' : (o.isPflanz ? 'Anpflanzung' : 'Habitatbaum'),
               style: const TextStyle(fontSize: 13, color: Colors.grey),
             ),
             SelectableText(
@@ -240,6 +240,50 @@ class _ObjectSheetState extends State<ObjectSheet> {
                   TextButton(
                     onPressed: () => setState(() => _checked = DateTime.now()),
                     child: const Text('Heute geprüft'),
+                  ),
+                  IconButton(
+                    tooltip: 'Datum wählen',
+                    icon: const Icon(Icons.calendar_month),
+                    onPressed: _pickDate,
+                  ),
+                ],
+              ),
+            ] else if (o.isPflanz) ...[
+              LabeledDropdown(
+                label: 'Baumart',
+                value: _subtype,
+                options: kBaumarten,
+                onChanged: (v) => setState(() => _subtype = v),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _number,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Anzahl Pflanzen',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              LabeledDropdown(
+                label: 'Status',
+                value: _zustand,
+                options: kPflanzStatus,
+                onChanged: (v) => setState(() => _zustand = v),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _checked == null
+                          ? 'Pflanzdatum: offen'
+                          : 'Pflanzdatum: ${formatDate(_checked!).substring(0, 10)}',
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(() => _checked = DateTime.now()),
+                    child: const Text('Heute'),
                   ),
                   IconButton(
                     tooltip: 'Datum wählen',

@@ -129,6 +129,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   List<Damage> _damages = [];
   List<GeoShape> _shapes = [];
   _DrawSession? _draw;
+  String? _placeChoice;
   bool _pickMode = false;
   bool _pickBusy = false;
   FlurstueckHit? _pending;
@@ -533,6 +534,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void _onMapTap(LatLng tap) {
     if (_draw != null) {
       _drawAddPoint(tap);
+      return;
+    }
+    final place = _placeChoice;
+    if (place != null) {
+      setState(() => _placeChoice = null);
+      _createByChoice(place, tap, null);
       return;
     }
     final zoom = _map.camera.zoom;
@@ -1306,7 +1313,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   // -------------------------------------------- Jagdeinrichtung, Habitatbaum
 
-  Future<void> _showCreateMenu(LatLng at, {double? accuracy}) async {
+  /// Anlegen-Menue. Mit [at] (langes Druecken) steht die Stelle fest, sonst
+  /// wird nach der Auswahl gefragt: eigene Position oder Stelle auf der Karte.
+  Future<void> _showCreateMenu(LatLng? at, {double? accuracy}) async {
     final choice = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -1332,6 +1341,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               onTap: () => Navigator.pop(ctx, 'habitat'),
             ),
             ListTile(
+              leading: const Icon(Icons.grass),
+              title: const Text('Anpflanzung (Punkt)'),
+              subtitle: const Text('Einzelne Bäume oder kleine Gruppe'),
+              onTap: () => Navigator.pop(ctx, 'pflanz'),
+            ),
+            ListTile(
               leading: const Icon(Icons.gesture),
               title: const Text('Fläche zeichnen'),
               subtitle: const Text(
@@ -1344,25 +1359,75 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         ),
       ),
     );
+    if (choice == null) return;
+    if (choice == 'flaeche') {
+      await _chooseShapeType();
+      return;
+    }
+
+    var target = at;
+    var acc = accuracy;
+    if (target == null) {
+      final where = await _askWhere();
+      if (where == null) return;
+      if (where == 'here') {
+        final p = _pos;
+        if (p == null) {
+          _snack(_locationMessage ?? 'Noch kein GPS-Signal.');
+          return;
+        }
+        target = LatLng(p.latitude, p.longitude);
+        acc = p.accuracy;
+      } else {
+        setState(() => _placeChoice = choice);
+        return;
+      }
+    }
+    final t = target;
+    if (t == null) return;
+    await _createByChoice(choice, t, acc);
+  }
+
+  Future<String?> _askWhere() {
+    return showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(
+                'Wo soll der Punkt liegen?',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.my_location),
+              title: const Text('An meiner Position'),
+              onTap: () => Navigator.pop(ctx, 'here'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.touch_app),
+              title: const Text('Stelle auf der Karte antippen'),
+              onTap: () => Navigator.pop(ctx, 'map'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _createByChoice(String choice, LatLng at, double? accuracy) async {
     if (choice == 'point') {
       await _createOwnPoint(at);
-    } else if (choice == 'jagd' || choice == 'habitat') {
-      await _createObject(choice!, at, accuracy);
-    } else if (choice == 'kaefer' || choice == 'sturm') {
-      await _createDamage(choice!, at, accuracy);
-    } else if (choice == 'flaeche') {
-      await _chooseShapeType();
+    } else if (choice == 'jagd' || choice == 'habitat' || choice == 'pflanz') {
+      await _createObject(choice, at, accuracy);
     }
   }
 
-  void _showCreateMenuHere() {
-    final p = _pos;
-    if (p == null) {
-      _snack(_locationMessage ?? 'Noch kein GPS-Signal.');
-      return;
-    }
-    _showCreateMenu(LatLng(p.latitude, p.longitude), accuracy: p.accuracy);
-  }
+  void _showCreateMenuHere() => _showCreateMenu(null);
 
   Future<void> _createObject(String kind, LatLng at, double? accuracy) async {
     final o = ForestObject(
@@ -1371,6 +1436,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       lat: at.latitude,
       lon: at.longitude,
       accuracy: accuracy,
+      zustand: kind == 'pflanz' ? 'Gepflanzt' : '',
+      checkedOn: kind == 'pflanz' ? DateTime.now() : null,
       parcelId: _parcelIdAt(at),
       updatedAt: DateTime.now(),
     );
@@ -1798,7 +1865,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     double aerialMin = 0;
     final aerialWanted = s.base == BaseMap.aerial && aerialSvc?.usable == true;
     if (aerialWanted) {
-      aerialMin = aerialSvc!.minZoomFor(WmsCatalog.defaultLayers(aerialSvc));
+      aerialMin = aerialSvc!.minZoomFor(
+        s.aerialLayers ?? WmsCatalog.defaultLayers(aerialSvc),
+      );
     }
 
     // Die Karte RP liegt immer darunter: Wo das Luftbild noch laedt oder keine
@@ -1811,6 +1880,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         aerialSvc,
         transparent: false,
         opacity: 1,
+        layerNames: s.aerialLayers,
         minZoom: aerialMin,
       );
       if (aerial != null) layers.add(aerial);
@@ -2083,7 +2153,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       width: size + 8,
                       height: size + 8,
                       child: ObjectMarker(
-                        isJagd: o.isJagd,
+                        icon: objectIconOf(o),
+                        color: objectColorOf(o),
                         isTarget: _targetId == o.id,
                         size: size,
                       ),
@@ -2246,6 +2317,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 for (final n in notes) ...[
                   const SizedBox(height: 6),
                   _chip(n, bg: Colors.white, fg: Colors.black87),
+                ],
+                if (_placeChoice != null) ...[
+                  const SizedBox(height: 6),
+                  _chip(
+                    'Tippe die Stelle auf der Karte an. Tippen hier bricht ab.',
+                    bg: Colors.teal.shade50,
+                    fg: Colors.teal.shade900,
+                    onTap: () => setState(() => _placeChoice = null),
+                  ),
                 ],
                 if (_pickMode || _pickBusy) ...[
                   const SizedBox(height: 6),
@@ -2471,6 +2551,39 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     ];
   }
 
+  List<Widget> _aerialLayerTiles(StateSetter setSheet) {
+    final svc = _services['dop'];
+    if (svc == null || !svc.usable) {
+      return [const ListTile(title: Text('Luftbild derzeit nicht verfügbar'))];
+    }
+    final current =
+        (_settings.aerialLayers ?? WmsCatalog.defaultLayers(svc)).toSet();
+    return [
+      for (final l in svc.caps!.layers)
+        CheckboxListTile(
+          dense: true,
+          contentPadding: EdgeInsets.only(left: 16.0 + 12 * l.depth, right: 8),
+          title: Text(l.title),
+          subtitle: Text(l.name, style: const TextStyle(fontSize: 11)),
+          value: current.contains(l.name),
+          onChanged: (v) {
+            final next =
+                (_settings.aerialLayers ?? WmsCatalog.defaultLayers(svc)).toSet();
+            if (v == true) {
+              next.add(l.name);
+            } else {
+              next.remove(l.name);
+            }
+            _change(setSheet, () => _settings.aerialLayers = next.toList());
+          },
+        ),
+      TextButton(
+        onPressed: () => _change(setSheet, () => _settings.aerialLayers = null),
+        child: const Text('Standardauswahl wiederherstellen'),
+      ),
+    ];
+  }
+
   Widget _buildSheet(BuildContext ctx, StateSetter setSheet) {
     final s = _settings;
     return SafeArea(
@@ -2501,6 +2614,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 _change(setSheet, () => _settings.base = v.first),
           ),
           const SizedBox(height: 8),
+          if (s.base == BaseMap.aerial)
+            ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: const Text('Ebenen des Luftbilds'),
+              subtitle: const Text('Bei störenden Linien oder Beschriftungen'),
+              children: _aerialLayerTiles(setSheet),
+            ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('Flurkarte anzeigen'),
