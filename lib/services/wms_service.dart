@@ -332,6 +332,31 @@ class WmsCatalog {
     if (caps == null) return [];
     final all = caps.layers;
 
+    if (svc.def.id == 'dop') {
+      // Nur das Bild selbst, ohne Kachelraster, Beschriftung und Befliegungsdaten.
+      // Es werden nur Ebenen ohne Unterebenen gewaehlt (Gruppen enthalten alles).
+      const bad = [
+        'kachel', 'blatt', 'raster', 'index', 'bildflug', 'befliegung',
+        'flug', 'grenz', 'rahmen', 'beschrift', 'label', 'text', 'meta',
+        'info', 'cir', 'infrarot',
+      ];
+      final leaves = <WmsLayerInfo>[];
+      for (var i = 0; i < all.length; i++) {
+        final isLeaf = i == all.length - 1 || all[i + 1].depth <= all[i].depth;
+        if (!isLeaf) continue;
+        final t = '${all[i].name} ${all[i].title}'.toLowerCase();
+        if (bad.any(t.contains)) continue;
+        leaves.add(all[i]);
+      }
+      if (leaves.isNotEmpty) {
+        final rgb = leaves
+            .where((l) => '${l.name} ${l.title}'.toLowerCase().contains('rgb'))
+            .toList();
+        final pick = rgb.isNotEmpty ? rgb : leaves;
+        return pick.map((l) => l.name).toList();
+      }
+    }
+
     if (svc.def.id == 'flur') {
       // Nur Flurstuecksgrenzen und -nummern, keine bunten Nutzungsflaechen.
       final picked = all

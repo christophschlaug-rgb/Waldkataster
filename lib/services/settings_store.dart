@@ -17,6 +17,9 @@ class MapSettings {
   /// Gewaehlte Ebenen der Flurkarte; null = Standardauswahl der App.
   List<String>? flurLayers;
 
+  /// Gewaehlte Ebenen des Luftbilds; null = Standardauswahl der App.
+  List<String>? aerialLayers;
+
   MapSettings({
     this.base = BaseMap.aerial,
     this.flurOn = true,
@@ -28,6 +31,7 @@ class MapSettings {
     this.parcelLabels = false,
     this.hintSeen = false,
     this.flurLayers,
+    this.aerialLayers,
   });
 
   static Future<MapSettings> load() async {
@@ -43,6 +47,7 @@ class MapSettings {
       parcelLabels: p.getBool('parcelLabels') ?? false,
       hintSeen: p.getBool('hintSeen') ?? false,
       flurLayers: p.getStringList('flurLayers'),
+      aerialLayers: p.getStringList('aerialLayers'),
     );
   }
 
@@ -62,6 +67,12 @@ class MapSettings {
       await p.remove('flurLayers');
     } else {
       await p.setStringList('flurLayers', layers);
+    }
+    final aerial = aerialLayers;
+    if (aerial == null) {
+      await p.remove('aerialLayers');
+    } else {
+      await p.setStringList('aerialLayers', aerial);
     }
   }
 }
