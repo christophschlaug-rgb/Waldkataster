@@ -143,3 +143,12 @@ fehlt, hilft die Seite "Dienste prüfen" (Menü Ebenen → Dienste prüfen).
 - Punkte (Jagdeinrichtung, Habitatbaum, Anpflanzung, eigener Punkt) lassen sich
   frei auf der Karte setzen: Knopf "Punkt anlegen", Art wählen und dann
   "Stelle auf der Karte antippen" (oder "An meiner Position")
+
+### Neu in Version 1.7
+
+- Ansicht: einzelne Arten von Punkten, Flächen und Linien lassen sich im Menü
+  (Ebenen → Ansicht) ein- und ausblenden; ausgeblendete Arten sind auch nicht
+  antippbar; im Menü gibt es einen Pfeil zurück zur Karte
+- Anpflanzung (Punkt) mit denselben Angaben wie die Anpflanzung als Fläche
+- Habitatbaum wird immer an der eigenen Position angelegt
+- Wege werden in kräftigem Pink dargestellt
