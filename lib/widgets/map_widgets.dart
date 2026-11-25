@@ -149,13 +149,15 @@ class OwnPointMarker extends StatelessWidget {
 
 /// Jagdeinrichtung oder Habitatbaum auf der Karte.
 class ObjectMarker extends StatelessWidget {
-  final bool isJagd;
+  final IconData icon;
+  final Color color;
   final bool isTarget;
   final double size;
 
   const ObjectMarker({
     super.key,
-    required this.isJagd,
+    required this.icon,
+    required this.color,
     required this.isTarget,
     required this.size,
   });
@@ -168,7 +170,7 @@ class ObjectMarker extends StatelessWidget {
           width: size,
           height: size,
           decoration: BoxDecoration(
-            color: isJagd ? const Color(0xFF6A1B9A) : const Color(0xFF2E7D32),
+            color: color,
             shape: BoxShape.circle,
             border: Border.all(
               color: isTarget ? Colors.black : Colors.white,
@@ -176,7 +178,7 @@ class ObjectMarker extends StatelessWidget {
             ),
           ),
           child: Icon(
-            isJagd ? Icons.cabin : Icons.park,
+            icon,
             size: size * 0.62,
             color: Colors.white,
           ),
