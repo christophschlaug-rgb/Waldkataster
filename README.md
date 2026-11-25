@@ -133,3 +133,13 @@ fehlt, hilft die Seite "Dienste prüfen" (Menü Ebenen → Dienste prüfen).
 - Schäden mit Datum: Hinweis, wenn sich eine Fläche mit früheren Einträgen
   gleichen Typs überschneidet; Auswertung je Parzelle und Jahr mit
   wiederkehrenden Schäden (Mein Wald → Flächen)
+
+### Neu in Version 1.6
+
+- Luftbild ohne gelbes Kachelraster und Befliegungsdaten; die Ebenen des
+  Luftbilds lassen sich im Menü "Ebenen" bei Bedarf von Hand wählen
+- Anpflanzung als Punkt (einzelne Bäume oder kleine Gruppe) mit Baumart, Anzahl,
+  Status, Pflanzdatum und Fotos
+- Punkte (Jagdeinrichtung, Habitatbaum, Anpflanzung, eigener Punkt) lassen sich
+  frei auf der Karte setzen: Knopf "Punkt anlegen", Art wählen und dann
+  "Stelle auf der Karte antippen" (oder "An meiner Position")
