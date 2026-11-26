@@ -36,23 +36,23 @@ class _ViewScreenState extends State<ViewScreen> {
     _Item('own', 'Eigene Punkte', Icons.adjust, Color(0xFF607D8B)),
     _Item('jagd', 'Jagdeinrichtungen', Icons.cabin, Color(0xFF6A1B9A)),
     _Item('habitat', 'Habitatbäume', Icons.park, Color(0xFF2E7D32)),
-    _Item('pflanz', 'Anpflanzungen (Punkte)', Icons.grass, Color(0xFF43A047)),
-    _Item('damages', 'Käfernester und Sturmschäden (Punkte)', Icons.bug_report,
-        Color(0xFFC62828)),
+    _Item('pflanz', 'Anpflanzungen', Icons.grass, Color(0xFF43A047)),
+    _Item('damages', 'Frühere Schäden (Käfernest, Sturmschaden)',
+        Icons.bug_report, Color(0xFFC62828)),
   ];
 
   List<_Item> get _shapes => [
         for (final t in kShapeTypes)
           _Item(
             'shape:${t.key}',
-            t.isLine ? '${t.label} (Linie)' : t.label,
+            t.label,
             t.icon,
             t.color,
           ),
       ];
 
   static const _parcels = [
-    _Item('parcels', 'Parzellen (Flächen)', Icons.crop_square, Color(0xFFFFA000)),
+    _Item('parcels', 'Parzellen', Icons.crop_square, Color(0xFFFFA000)),
   ];
 
   void _set(String key, bool visible) {
@@ -130,7 +130,8 @@ class _ViewScreenState extends State<ViewScreen> {
             ),
           ),
           _header('Punkte'),
-          for (final i in _points) _tile(i),
+          for (final i in _points)
+            if (i.key != 'damages' || (widget.counts['damages'] ?? 0) > 0) _tile(i),
           _header('Flächen und Linien'),
           for (final i in _shapes) _tile(i),
           _header('Parzellen'),

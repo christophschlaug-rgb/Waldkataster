@@ -805,27 +805,29 @@ class _ForestScreenState extends State<ForestScreen> {
                     );
                   },
                 ),
-          _damagesTab(),
+          if (_damages.isNotEmpty) _damagesTab(),
           _shapesTab(),
           _measuresTab(),
         ],
       );
     }
 
+    final showDamages = _damages.isNotEmpty;
     return DefaultTabController(
-      length: 6,
+      key: ValueKey(showDamages),
+      length: showDamages ? 6 : 5,
       child: Scaffold(
         appBar: AppBar(
           title: const Text('Mein Wald'),
-          bottom: const TabBar(
+          bottom: TabBar(
             isScrollable: true,
             tabs: [
-              Tab(text: 'Parzellen'),
-              Tab(text: 'Abteilungen'),
-              Tab(text: 'Objekte'),
-              Tab(text: 'Schäden'),
-              Tab(text: 'Flächen'),
-              Tab(text: 'Maßnahmen'),
+              const Tab(text: 'Parzellen'),
+              const Tab(text: 'Abteilungen'),
+              const Tab(text: 'Objekte'),
+              if (showDamages) const Tab(text: 'Frühere Schäden'),
+              const Tab(text: 'Flächen'),
+              const Tab(text: 'Maßnahmen'),
             ],
           ),
         ),
